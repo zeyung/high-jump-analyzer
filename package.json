@@ -1,0 +1,10 @@
+{
+  "name": "high-jump-analyzer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser app that analyzes a high jump video: joint angles, curve lean, takeoff, clearance and a 0-100 rating.",
+  "scripts": {
+    "test": "node --test"
+  }
+}
