@@ -295,8 +295,12 @@ function backBy(V, k, dt) {
  * overrides (optional): {plant, takeoff, peak, landing} frame indices set by hand.
  * takeoffFoot (optional): 'left' | 'right', the foot the athlete jumps off.
  *   Only that foot is searched for the takeoff contact.
+ * jumpNear (optional): a frame index known to be near the jump (the jumper
+ *   tapped over the bar, or the frame where the bar was marked). The peak is
+ *   looked for within 1.5 s of it, so a glitch in the run-up cannot pass for
+ *   the jump.
  */
-export function analyzeJump(frames, { width, height, heightCm, gender, barCm = null, bar = null, overrides = null, takeoffFoot = null }) {
+export function analyzeJump(frames, { width, height, heightCm, gender, barCm = null, bar = null, overrides = null, takeoffFoot = null, jumpNear = null }) {
   if (barCm !== null && barCm !== undefined && !(barCm >= 50 && barCm <= 260)) {
     throw new Error('Bar height must be between 50 and 260 cm.');
   }
@@ -350,8 +354,11 @@ export function analyzeJump(frames, { width, height, heightCm, gender, barCm = n
   // in body heights. (Not simply the highest point in the picture: a
   // jumper far away near the horizon is high in the picture too.)
   const elev = smooth(V.map((_, k) => (localFloor(k) - hip[k].y) / sizeAt[k]), 3);
-  let peak = 0;
-  elev.forEach((e, k) => { if (e > elev[peak]) peak = k; });
+  const hintK = idxOf(jumpNear);
+  const inWindow = (k) => hintK === null || Math.abs(V[k].t - V[hintK].t) <= 1.5;
+  let peak = -1;
+  elev.forEach((e, k) => { if (inWindow(k) && (peak < 0 || e > elev[peak])) peak = k; });
+  if (peak < 0) { peak = 0; elev.forEach((e, k) => { if (e > elev[peak]) peak = k; }); }
   if (ov.peak !== undefined && ov.peak !== null) peak = idxOf(ov.peak);
   if (peak < 5) throw new Error('The clip seems to start at or after the peak of the jump. Include the last approach steps.');
 

@@ -17,7 +17,7 @@ Everything runs in your browser using [MediaPipe Pose](https://ai.google.dev/edg
 
 1. **Fill in the form**: video, athlete height, bar height, gender, takeoff foot.
 2. **Pick the jumper and the bar** (the pose model loads meanwhile): tap the jumper; optionally tap them again on a frame over the bar; tap the two ends of the bar, then the floor under it.
-3. **Tracking** follows only the person you tapped, with a zoomed crop on every frame. Candidates are scored on distance, body size and confidence, so a coach or athlete standing nearby cannot take over, and the crop is also tried sideways and upside down for the flight over the bar. With two taps it also tracks back from the second tap and joins the runs where they agree.
+3. **Tracking** follows only the person you tapped, with a zoomed crop on every frame. Candidates are scored on distance, body size and confidence, so a coach or athlete standing nearby cannot take over, and the crop is also tried sideways and upside down for the flight over the bar. With two taps it also tracks back from the second tap and joins the runs where they agree. It learns the jumper's colours (top and legs), and when the jumper leaves the picture or is hidden it searches the whole frame and picks them up again by those colours when they come back. People seen standing near the jumper (a teammate by the standard, an official) are remembered, so the tracker does not switch to them while the jumper is upside down over the bar.
 4. **Camera pans** are measured from the background and removed, so a handheld, panning phone still works.
 5. **Key moments**: plant and takeoff from the takeoff foot landing and leaving the ground; the peak from the hips' height above the jumper's own feet; landing from when the fall stops. Any of them can be set by hand.
 6. **Heights**: the bar is taken to be exactly the height entered, so it measures the peak hip height and clearance at the depth where the jumper crosses. Without a marked bar, heights are approximate.
@@ -32,7 +32,9 @@ Each joint has its own color: a solid dot for the left side and a ring for the r
 
 ## Training data
 
-**Fix points** lets you drag any wrong joint to the right spot. **Export labeled frames** saves frames with their joint positions as JSON. Collected over many jumps, that is the training data a high-jump-specific pose model would need.
+**Bar following**: the bar ends and the floor point are followed through the whole clip by matching the picture around them, so the bar stays on the real bar as the camera pans. If it drifts on some frame, drag it back there: every frame you adjust is kept, and the bar is blended between them. These still points also correct the camera-pan estimate used for all measurements.
+
+**Fix points** lets you drag any wrong joint to the right spot. The fix is carried to the frames around it (up to half a second each way, shown light green) by following that spot in the picture, until the model finds the joint again. **Export labeled frames** saves frames with their joint positions as JSON. Collected over many jumps, that is the training data a high-jump-specific pose model would need.
 
 ## Filming tips
 
@@ -55,6 +57,7 @@ These are estimates from a single 2D video, not lab measurements. Your height se
 
 - `analysis.js`: the jump math (no browser needed).
 - `tracking.js`: picking the jumper and cleaning up the pose output.
+- `points.js`: following points by their look (bar ends, fixed joints), camera pans from still points, and the jumper's colour fingerprint.
 - `bar.js`: finding line candidates for the bar (kept for experiments).
 - `motion.js`: measuring and removing camera pans.
 - `coaching.js`: feedback, drills, fundamentals and the practice checklist.

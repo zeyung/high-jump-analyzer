@@ -1,7 +1,8 @@
 import { analyzeJump, angleAt, mid, toPx, phaseAt, LM } from './analysis.js';
-import { cleanTracking, applyCorrections, plausiblePose, poseBox, flipSides } from './tracking.js';
+import { cleanTracking, applyCorrections, plausiblePose, poseBox, flipSides, meanVisibility } from './tracking.js';
 import { cameraPath, stabilize } from './motion.js';
 import { coachJump } from './coaching.js';
+import { followPoint, followAnchored, cameraFromPoints, appearanceOf, appearanceSim, blendAppearance } from './points.js';
 
 const TV = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 const MODELS = {
@@ -28,13 +29,19 @@ cropCanvas.width = cropCanvas.height = CROP;
 const cctx = cropCanvas.getContext('2d');
 const motionCanvas = document.createElement('canvas');
 const mctx = motionCanvas.getContext('2d', { willReadFrequently: true });
+// Medium-size frames: following the bar ends and fixed joints by their look,
+// and the jumper's colours for finding them again after they leave the picture.
+const detailCanvas = document.createElement('canvas');
+const dctx = detailCanvas.getContext('2d', { willReadFrequently: true });
+const DETAIL_MAX = 480; // longest side, pixels
+const DETAIL_BUDGET = 80e6; // bytes kept for all detail frames
 
 const landmarkers = {};
 let state = null; // results
 let setup = null; // the pick-the-jumper step
 // For checking a run from the browser console.
 window.hjState = () => state;
-window.hjDebug = { detectCrop: (...a) => detectCrop(...a), detectFull: (...a) => detectFull(...a), seekTo: (t) => seekTo(t), getLandmarker: (k) => getLandmarker(k) };
+window.hjDebug = { carry: () => carryCorrections(), detectCrop: (...a) => detectCrop(...a), detectFull: (...a) => detectFull(...a), seekTo: (t) => seekTo(t), getLandmarker: (k) => getLandmarker(k) };
 
 // ---------- markers, colors, what to show ----------
 // Lighter shade + solid dot = left side; deeper shade + ring = right side.
@@ -238,19 +245,31 @@ function personAt(lm, pt) {
   const tries = [];
   for (const ang of [0, -90, 90, 180]) for (const side of [m * 0.3, m * 0.55, m * 0.9]) tries.push(() => detectCrop(lm, { cx: pt.x, cy: pt.y, side }, ang));
   tries.push(() => detectFull(lm));
+  // Every view is tried and the person whose body passes closest to the tap
+  // wins, so a tap on an upside-down jumper over the bar does not pick a
+  // teammate standing underneath (who the upright view sees better).
+  const bodyPts = [0, 11, 12, 23, 24, 25, 26, 27, 28];
+  const bones = [[11, 23], [12, 24], [23, 25], [24, 26], [25, 27], [26, 28], [11, 12], [23, 24]];
+  const near = (p) => {
+    const P = (k) => ({ x: p[k].x * VW, y: p[k].y * VH });
+    let d = Infinity;
+    for (const k of bodyPts) { const q = P(k); d = Math.min(d, Math.hypot(q.x - pt.x, q.y - pt.y)); }
+    for (const [a, b] of bones) {
+      const A = P(a), B = P(b), vx = B.x - A.x, vy = B.y - A.y;
+      const u = Math.max(0, Math.min(1, ((pt.x - A.x) * vx + (pt.y - A.y) * vy) / (vx * vx + vy * vy || 1)));
+      d = Math.min(d, Math.hypot(A.x + vx * u - pt.x, A.y + vy * u - pt.y));
+    }
+    return d;
+  };
+  let best = null, bestD = Infinity;
   for (const run of tries) {
-    let best = null, bestD = Infinity;
     for (const p of run()) {
       if (!plausiblePose(p, aspect)) continue;
-      const b = poseBox(p, aspect);
-      const inside = Math.abs(pt.x / VW - b.cx) <= b.w / 2 + 0.03 && Math.abs(pt.y / VH - b.cy) <= b.h / 2 + 0.03;
-      const hp = hipPx(p, VW, VH);
-      const d = Math.hypot(hp.x - pt.x, hp.y - pt.y) - (inside ? 1e6 : 0);
+      const d = near(p) - 0.02 * m * meanVisibility(p);
       if (d < bestD) { bestD = d; best = p; }
     }
-    if (best && (bestD < 0 || bestD < m * 0.15)) return best;
   }
-  return null;
+  return best && bestD < m * 0.12 ? best : null;
 }
 
 /**
@@ -274,6 +293,7 @@ async function followJumper(lm, times, seedOrSeeds, onProgress) {
   const minSide = Math.min(VW, VH) * 0.16, maxSide = Math.max(VW, VH) * 1.1;
   const sideFor = (lms) => Math.min(maxSide, Math.max(minSide, poseBox(lms, aspect).size * VH * 2.2));
   let done = 0;
+  const stats = window.hjDebug.stats = { seek: 0, grab: 0, detect: 0, frames: 0, reacquire: 0, misses: 0 };
 
   const grabGray = (k) => {
     mctx.drawImage(video, 0, 0, mw, mh);
@@ -282,6 +302,31 @@ async function followJumper(lm, times, seedOrSeeds, onProgress) {
     for (let i = 0, j = 0; i < g.length; i++, j += 4) g[i] = (d[j] * 77 + d[j + 1] * 150 + d[j + 2] * 29) >> 8;
     grays[k] = g;
   };
+  // Medium frames: kept in grey for following points later; the colour copy
+  // of the current frame is used for the jumper's colours.
+  let ds = DETAIL_MAX / Math.max(VW, VH);
+  ds = Math.min(ds, Math.sqrt(DETAIL_BUDGET / Math.max(1, n * VW * VH)));
+  detailCanvas.width = Math.max(32, Math.round(VW * ds));
+  detailCanvas.height = Math.max(32, Math.round(VH * ds));
+  const dw = detailCanvas.width, dh = detailCanvas.height;
+  const detailGrays = new Array(n).fill(null);
+  let rgba = null;
+  const grabDetail = (k) => {
+    dctx.drawImage(video, 0, 0, dw, dh);
+    rgba = dctx.getImageData(0, 0, dw, dh).data;
+    if (!detailGrays[k]) {
+      const g = new Uint8Array(dw * dh);
+      for (let i = 0, j = 0; i < g.length; i++, j += 4) g[i] = (rgba[j] * 77 + rgba[j + 1] * 150 + rgba[j + 2] * 29) >> 8;
+      detailGrays[k] = g;
+    }
+  };
+
+  // The jumper's colours (top and legs), learned from confident frames.
+  // Used to refuse other people and to find the jumper again after they
+  // leave the picture.
+  let look = null;
+  const lookOf = (lms) => appearanceOf(rgba, dw, dh, lms);
+  const SIM_OK = 0.8, SIM_MIN = 0.62;
 
   // Recent body sizes (segment length, which does not change with pose).
   let sizes = [];
@@ -300,7 +345,9 @@ async function followJumper(lm, times, seedOrSeeds, onProgress) {
   // Cost of a candidate: how far from where the jumper should be, how
   // different in size (in body sizes), and how unsure the model is. A coach
   // or athlete standing nearby is usually further off and a different size.
-  const cost = (c, guess) => {
+  // strict: the jumper was just lost, so someone who does not look like
+  // them is refused outright.
+  const cost = (c, guess, strict = false) => {
     const ref = refSize() || segSize(c);
     const ratio = segSize(c) / ref;
     // Body size changes slowly; a pose far smaller or bigger is a different
@@ -310,15 +357,35 @@ async function followJumper(lm, times, seedOrSeeds, onProgress) {
     const d = Math.hypot(hp.x - guess.cx, hp.y - guess.cy) / ref;
     const sz = Math.abs(Math.log(ratio));
     const vis = c.reduce((a, q) => a + (q.visibility ?? 1), 0) / c.length;
-    return d + 1.5 * sz + (1 - vis);
+    const sim = look ? appearanceSim(look, lookOf(c)) : null;
+    if (strict && sim !== null && sim < SIM_MIN) return Infinity;
+    return d + 1.5 * sz + (1 - vis) + (sim === null ? 0 : 3 * Math.max(0, SIM_OK - sim)) + (isOther(hp, ref) ? 2 : 0);
   };
-  const best = (cands, guess) => {
+  // Other people seen near the jumper (a teammate by the standard, an
+  // official). If a candidate stands where someone else already stood while
+  // the jumper was elsewhere, it is probably that person: the jumper is
+  // upside down over the bar and the model has missed them.
+  let others = [], curK = 0;
+  const OTHER_FRAMES = 20;
+  const isOther = (hp, ref) => others.some((o) => o.k !== curK && Math.abs(o.k - curK) <= OTHER_FRAMES && Math.hypot(o.x - hp.x, o.y - hp.y) < 0.35 * ref);
+  const noteOthers = (cands, pick) => {
+    if (!pick) return;
+    const ref = refSize() || segSize(pick);
+    const hp0 = hipPx(pick, VW, VH);
+    for (const c of cands) {
+      if (c === pick || !plausiblePose(c, aspect)) continue;
+      const hp = hipPx(c, VW, VH);
+      if (Math.hypot(hp.x - hp0.x, hp.y - hp0.y) > 0.6 * ref) others.push({ k: curK, x: hp.x, y: hp.y });
+    }
+  };
+  const best = (cands, guess, strict = false) => {
     let pick = null, bc = Infinity;
     for (const c of cands) {
       if (!plausiblePose(c, aspect)) continue;
-      const v = cost(c, guess);
+      const v = cost(c, guess, strict);
       if (v < bc) { bc = v; pick = c; }
     }
+    if (bc <= GOOD) noteOthers(cands, pick);
     return { pick, c: bc };
   };
   const GOOD = 0.5, OK = 1.3;
@@ -328,20 +395,55 @@ async function followJumper(lm, times, seedOrSeeds, onProgress) {
   const findIn = (guess, allowFull, misses = 0) => {
     // The longer the jumper has been lost, the further away we accept them.
     const ok = Math.min(3, OK + 0.25 * misses);
-    let r = best(detectCrop(lm, guess), guess);
+    const strict = misses > 0;
+    let r = best(detectCrop(lm, guess), guess, strict);
     if (r.c > GOOD) {
       for (const ang of [-90, 90, 180]) {
-        const r2 = best(detectCrop(lm, guess, ang), guess);
+        const r2 = best(detectCrop(lm, guess, ang), guess, strict);
         if (r2.c < r.c) r = r2;
         if (r.c <= GOOD) break;
       }
     }
     if (r.c > ok && allowFull) {
-      const r3 = best(detectFull(lm), guess);
+      const r3 = best(detectFull(lm), guess, strict);
       if (r3.c < r.c) r = r3;
     }
-    return r.c <= ok ? r.pick : null;
+    return r.c <= ok ? { pick: r.pick, c: r.c } : null;
   };
+
+  // The jumper left the picture (or is hidden): look over the whole frame,
+  // in overlapping squares so a small, far-away jumper is still found, and
+  // take the person who looks most like them, wherever they come back in.
+  const tiles = (() => {
+    const side = Math.min(VW, VH), L = Math.max(VW, VH), out = [];
+    const nT = L > side * 1.15 ? Math.ceil((L - side) / (side / 2)) + 1 : 1;
+    for (let t = 0; t < nT; t++) {
+      const off = nT === 1 ? (L - side) / 2 : ((L - side) * t) / (nT - 1);
+      out.push(VW >= VH ? { cx: off + side / 2, cy: VH / 2, side } : { cx: VW / 2, cy: off + side / 2, side });
+    }
+    return out;
+  })();
+  const reacquire = (guess) => {
+    stats.reacquire++;
+    const ref = refSize();
+    const cands = [...detectFull(lm)];
+    for (const t of tiles) cands.push(...detectCrop(lm, t));
+    let pick = null, bc = Infinity;
+    for (const c of cands) {
+      if (!plausiblePose(c, aspect) || meanVisibility(c) < 0.5) continue;
+      const ratio = ref ? segSize(c) / ref : 1;
+      if (ratio < 0.5 || ratio > 2) continue;
+      if (ref && isOther(hipPx(c, VW, VH), ref)) continue;
+      const sim = look ? appearanceSim(look, lookOf(c)) : null;
+      if (sim !== null && sim < SIM_MIN) continue;
+      const hp = hipPx(c, VW, VH);
+      const far = Math.hypot(hp.x - guess.cx, hp.y - guess.cy) / Math.hypot(VW, VH);
+      const v = 3 * (1 - (sim ?? 0.7)) + Math.abs(Math.log(ratio)) + 0.8 * far;
+      if (v < bc) { bc = v; pick = c; }
+    }
+    return pick;
+  };
+  const LOST = 3;
 
   async function run(from, to, step, startBox, first, out) {
     sizes = [];
@@ -349,25 +451,46 @@ async function followJumper(lm, times, seedOrSeeds, onProgress) {
     let vel = { x: 0, y: 0 };
     let last = null, misses = 0;
     for (let k = from; step > 0 ? k <= to : k >= to; k += step) {
+      let t0 = performance.now();
       await seekTo(times[k]);
+      stats.seek += performance.now() - t0; t0 = performance.now();
       grabGray(k);
+      grabDetail(k);
+      stats.grab += performance.now() - t0; t0 = performance.now();
       // Trust the recent speed only partly: at the plant the run-up speed
       // turns into upward speed, so a straight-line guess overshoots.
       const guess = { cx: box.cx + 0.5 * vel.x, cy: box.cy + 0.5 * vel.y, side: box.side };
-      const pick = k === from && first ? first : findIn(guess, misses >= 1, misses);
+      curK = k;
+      let pick = null, sure = false;
+      if (k === from && first) {
+        pick = first; sure = true;
+        // Note who else is around the picked jumper.
+        noteOthers(detectCrop(lm, { ...guess, side: Math.min(maxSide, guess.side * 1.5) }), first);
+      }
+      else {
+        const r = findIn(guess, misses >= 1, misses);
+        if (r) { pick = r.pick; sure = r.c <= GOOD; }
+        // Gone for a few frames: search everywhere (every other frame once
+        // they have been gone a while, to save time).
+        else if (misses >= LOST && (misses < 12 || k % 2 === 0)) pick = reacquire(guess);
+      }
+      stats.detect += performance.now() - t0; stats.frames++;
       out[k] = pick;
+      if (pick && sure && meanVisibility(pick) > 0.7) look = blendAppearance(look, lookOf(pick), look ? 0.1 : 1);
       if (pick) {
         sizes.push(segSize(pick));
         if (sizes.length > 15) sizes.shift();
         const hp = hipPx(pick, VW, VH);
-        if (last) vel = { x: 0.6 * (hp.x - last.x) + 0.4 * vel.x, y: 0.6 * (hp.y - last.y) + 0.4 * vel.y };
+        if (last && misses === 0) vel = { x: 0.6 * (hp.x - last.x) + 0.4 * vel.x, y: 0.6 * (hp.y - last.y) + 0.4 * vel.y };
         last = hp;
-        box = { cx: hp.x, cy: hp.y, side: 0.6 * box.side + 0.4 * sideFor(pick) };
+        // Just found again after a miss: zoom straight back in on them.
+        box = { cx: hp.x, cy: hp.y, side: misses ? sideFor(pick) : 0.6 * box.side + 0.4 * sideFor(pick) };
         misses = 0;
       } else {
         // Lost: hold the last position (do not run off along the old speed)
         // and look a little wider each frame.
         misses++;
+        stats.misses++;
         vel = { x: 0, y: 0 };
         box = { cx: box.cx, cy: box.cy, side: Math.min(maxSide, box.side * 1.1) };
         lostBoxes[k] = { x: (guess.cx - guess.side / 2) * ms, y: (guess.cy - guess.side / 2) * ms, w: guess.side * ms, h: guess.side * ms };
@@ -398,7 +521,15 @@ async function followJumper(lm, times, seedOrSeeds, onProgress) {
       const ha = hipPx(A[k], VW, VH), hb = hipPx(B[k], VW, VH);
       if (Math.hypot(ha.x - hb.x, ha.y - hb.y) < 0.25 * segSize(B[k])) m = k;
     }
-    out = A.map((p, k) => (k <= m ? p : B[k]));
+    // After the join, the second run; until that run has seen the jumper,
+    // the first run fills in. Later gaps in the second run stay empty (and
+    // are bridged when short), rather than being filled with whoever the
+    // first run had wandered onto. If the second run found nobody to
+    // follow, the first run is kept.
+    let bStart = -1;
+    for (let k = m + 1; k < n; k++) if (B[k]) { bStart = k; break; }
+    const bUseful = B.some((p, k) => p && k > m && k !== s1.frame);
+    out = A.map((p, k) => (k <= m ? p : !bUseful ? B[k] || p : k < bStart ? p : B[k]));
   }
   onProgress(1);
   for (let k = 0; k < n; k++) {
@@ -411,7 +542,7 @@ async function followJumper(lm, times, seedOrSeeds, onProgress) {
   // Camera pans, measured with the jumper masked out.
   const cum = cameraPath(grays, mw, mh, boxesSmall);
   const cumNorm = cum.map((c) => ({ x: c.x / mw, y: c.y / mh }));
-  return { frames: times.map((t, k) => ({ t, lms: out[k] })), cumNorm };
+  return { frames: times.map((t, k) => ({ t, lms: out[k] })), cumNorm, detail: { w: dw, h: dh, grays: detailGrays } };
 }
 
 // ---------- step 2: pick the jumper and the bar ----------
@@ -632,7 +763,7 @@ $('analyze').addEventListener('click', async () => {
     const VW = video.videoWidth, VH = video.videoHeight;
     const seeds = setup.jumpers.map((j) => ({ frame: j.index, pose: j.pose, box: { cx: j.x * VW, cy: j.y * VH, side: Math.min(VW, VH) * 0.45 } }));
     $('progress').hidden = false;
-    const { frames, cumNorm } = await followJumper(lm, setup.times, seeds, (p) => {
+    const { frames, cumNorm, detail } = await followJumper(lm, setup.times, seeds, (p) => {
       $('progress').value = p;
       setSetupStatus(`Following the jumper up close… ${Math.round(p * 100)}%`);
     });
@@ -640,14 +771,17 @@ $('analyze').addEventListener('click', async () => {
     setSetupStatus('');
     state = {
       start: setup.start, fps: setup.fps, slow: setup.slow, times: setup.times,
-      inputs: setup.inputs, cum: cumNorm, rawFollowed: frames,
-      corrections: {}, overrides: {}, frames: null, analysis: null, images: {},
-      barMarks: setup.bar ? { index: setup.bar.index, a: setup.bar.a, b: setup.bar.b, ground: setup.bar.ground } : null,
+      inputs: setup.inputs, cum: cumNorm, cumRaw: cumNorm, detail, rawFollowed: frames,
+      corrections: {}, carried: {}, overrides: {}, frames: null, analysis: null, images: {},
+      barAnchors: setup.bar ? [{ index: setup.bar.index, a: setup.bar.a, b: setup.bar.b, ground: setup.bar.ground }] : [],
+      barMarks: null, barTrack: null,
+      jumpNear: seeds.length > 1 ? Math.max(...seeds.map((sd) => sd.frame)) : null,
       barSource: setup.bar ? 'marked by you' : null,
       mode: 'view', barTaps: [], flipped: false, flipChecked: false,
     };
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
+    trackBar();
     state.cleaned = cleanFrames(frames);
     runAnalysis();
     $('pick').hidden = true;
@@ -666,6 +800,34 @@ $('analyze').addEventListener('click', async () => {
 // in the coordinates of the frame on screen.
 const camAt = (i) => (state.cum && state.cum[i]) || { x: 0, y: 0 };
 
+// The bar is followed through the whole clip from every frame where you
+// placed or moved it (its ends and the floor point are matched by their look
+// from frame to frame). Those still points also give the camera's pan more
+// exactly than the whole-picture estimate, so the jumper's measurements
+// improve too.
+const BAR_KEYS = ['a', 'b', 'ground'];
+function trackBar() {
+  const A = (state.barAnchors || []).slice().sort((x, y) => x.index - y.index);
+  state.barAnchors = A;
+  state.barTrack = null;
+  state.cum = state.cumRaw;
+  if (!A.length) { state.barMarks = null; return; }
+  // Reference marks for the analysis: the ones nearest the top of the jump.
+  const peak = state.analysis?.keyFrames?.peak;
+  const ref = peak === undefined ? A[A.length - 1] : A.reduce((p, q) => (Math.abs(q.index - peak) < Math.abs(p.index - peak) ? q : p));
+  state.barMarks = ref;
+  const D = state.detail;
+  if (!D || !state.cumRaw) return;
+  const cumPx = state.cumRaw.map((c) => ({ x: c.x * D.w, y: c.y * D.h }));
+  const predict = (k, prev, kp) => ({ x: prev.x + cumPx[k].x - cumPx[kp].x, y: prev.y + cumPx[k].y - cumPx[kp].y });
+  state.barTrack = BAR_KEYS.map((key) => {
+    const anchors = A.filter((m) => m[key]).map((m) => ({ index: m.index, x: m[key].x * D.w, y: m[key].y * D.h }));
+    if (!anchors.length) return null;
+    return followAnchored(D.grays, D.w, D.h, anchors, { predict, search: 6 }).map((p) => p && { x: p.x / D.w, y: p.y / D.h, ok: p.ok });
+  });
+  state.cum = cameraFromPoints(state.cumRaw, state.barTrack, BAR_KEYS.map((k) => ref[k]), ref.index);
+}
+
 // Bar ends in ground coordinates (normalized), or null.
 function barGround() {
   const m = state.barMarks;
@@ -674,21 +836,21 @@ function barGround() {
   const g = (p) => ({ x: p.x - c.x, y: p.y - c.y });
   return { a: g(m.a), b: g(m.b), ground: m.ground ? g(m.ground) : undefined };
 }
-// Bar ends on frame i, in pixels.
+// Bar ends on frame i, in pixels: where you put them on that frame, else
+// where they were followed to, else moved with the camera.
 function barOnFrame(i) {
   const b = barGround();
   if (!b) return null;
   const c = camAt(i), W = canvas.width, H = canvas.height;
   const f = (p) => ({ x: (p.x + c.x) * W, y: (p.y + c.y) * H });
-  return { a: f(b.a), b: f(b.b), ground: b.ground ? f(b.ground) : null };
-}
-// Re-express the bar marks on frame i (so they can be dragged there).
-function barMarksOnFrame(i) {
-  const b = barGround();
-  if (!b) return null;
-  const c = camAt(i);
-  const f = (p) => ({ x: p.x + c.x, y: p.y + c.y });
-  return { index: i, a: f(b.a), b: f(b.b), ground: b.ground ? f(b.ground) : undefined };
+  const out = { a: f(b.a), b: f(b.b), ground: b.ground ? f(b.ground) : null };
+  const own = state.barAnchors?.find((m) => m.index === i);
+  BAR_KEYS.forEach((key, j) => {
+    if (own && own[key]) { out[key] = { x: own[key].x * W, y: own[key].y * H }; return; }
+    const p = state.barTrack?.[j]?.[i];
+    if (p && p.ok) out[key] = { x: p.x * W, y: p.y * H };
+  });
+  return out;
 }
 
 // ---------- drawing ----------
@@ -836,11 +998,13 @@ function drawFrame(i) {
 
     const fixing = state.mode === 'fix';
     const corr = state.corrections[i] || {};
+    const carried = (state.carried && state.carried[i]) || {};
     // Left dots first, then right rings on top, so overlapping pairs both show.
     const order = [...MARKERS.filter((m) => m.side !== 'R'), ...MARKERS.filter((m) => m.side === 'R')];
     for (const m of order) {
       if (!view.markers[m.k] && !fixing) continue;
-      drawMarker(corr[m.k] ? { ...m, color: '#5dff8f' } : m, P[m.k].x, P[m.k].y, fixing ? r * 1.4 : r, s);
+      const fixColor = corr[m.k] ? '#5dff8f' : fixing && carried[m.k] ? '#b9ffd0' : null;
+      drawMarker(fixColor ? { ...m, color: fixColor } : m, P[m.k].x, P[m.k].y, fixing ? r * 1.4 : r, s);
     }
   }
 
@@ -997,9 +1161,9 @@ function setMode(mode) {
   canvas.classList.toggle('tapping', mode !== 'view');
   if (mode === 'pick') setHint('Tap the jumper on the video. Use a frame where they are clearly visible.');
   else if (mode === 'bar') setHint(state.barMarks
-    ? 'Drag the round handles onto the two ends of the bar. Optional: drag the square onto the floor directly under the bar.'
+    ? 'Drag the round handles onto the two ends of the bar, and the square onto the floor under it. The bar is followed through the whole clip from here; if it drifts on another frame, go there and drag it back, and both frames are kept.'
     : 'Find a frame where both bar ends show, then tap the left end and the right end.');
-  else if (mode === 'fix') setHint('Drag any point to where the joint really is (fixed points turn green). You can also set the current frame as a key moment.');
+  else if (mode === 'fix') setHint('Drag any point to where the joint really is (fixed points turn green). The fix is carried to the frames around it (light green) until the model finds the joint again. You can also set the current frame as a key moment.');
   else setHint('');
   updateToolState();
   drawFrame(currentIndex());
@@ -1036,7 +1200,8 @@ $('markBar').addEventListener('click', async () => {
   setMode('bar');
 });
 $('clearBar').addEventListener('click', async () => {
-  state.barMarks = null;
+  state.barAnchors = [];
+  trackBar();
   state.barSource = null;
   setMode('view');
   await reanalyze('Bar removed.');
@@ -1085,9 +1250,10 @@ canvas.addEventListener('pointerdown', async (e) => {
       if (state.barTaps.length === 1) setHint('Now tap the right end of the bar.');
       if (state.barTaps.length === 2) {
         const [a, b] = state.barTaps;
-        state.barMarks = { index: i, a, b };
+        state.barAnchors = [{ index: i, a, b }];
         state.barSource = 'marked by you';
         state.barEdited = true;
+        trackBar();
         setMode('bar');
       }
       drawFrame(i);
@@ -1103,11 +1269,16 @@ canvas.addEventListener('pointerdown', async (e) => {
       if (d < bestD) { bestD = d; best = name; }
     }
     if (best) {
-      // Edit the bar as it appears on this frame.
-      const marks = barMarksOnFrame(i);
-      if (best === 'ground' && !marks.ground) marks.ground = { x: g.x / W, y: g.y / H };
-      state.barMarks = marks;
-      drag = { type: 'bar', handle: best };
+      // Moving a handle pins the bar on this frame; it is followed from here
+      // (and from any other frame you pinned) through the whole clip.
+      let anchor = state.barAnchors.find((m) => m.index === i);
+      if (!anchor) {
+        const n = (q) => (q ? { x: q.x / W, y: q.y / H } : undefined);
+        anchor = { index: i, a: n(b.a), b: n(b.b), ground: b.ground ? n(b.ground) : undefined };
+        state.barAnchors.push(anchor);
+      }
+      if (best === 'ground' && !anchor.ground) anchor.ground = { x: g.x / W, y: g.y / H };
+      drag = { type: 'bar', handle: best, anchor };
       canvas.setPointerCapture(e.pointerId);
       e.preventDefault();
     }
@@ -1124,6 +1295,8 @@ canvas.addEventListener('pointerdown', async (e) => {
     if (d < bestD) { best = m.k; bestD = d; }
   }
   if (best === null) return;
+  // Edit a copy: the model's own points are kept to measure your fix against.
+  state.frames[i] = { ...f, lms: f.lms.map((q) => ({ ...q })) };
   drag = { type: 'point', i, k: best };
   canvas.setPointerCapture(e.pointerId);
   e.preventDefault();
@@ -1133,7 +1306,7 @@ canvas.addEventListener('pointermove', (e) => {
   const p = canvasPoint(e);
   const nx = Math.min(1, Math.max(0, p.x / canvas.width)), ny = Math.min(1, Math.max(0, p.y / canvas.height));
   if (drag.type === 'bar') {
-    state.barMarks = { ...state.barMarks, [drag.handle]: { x: nx, y: ny } };
+    drag.anchor[drag.handle] = { x: nx, y: ny };
     state.barSource = 'marked by you';
     state.barEdited = true;
     drawFrame(currentIndex());
@@ -1143,7 +1316,15 @@ canvas.addEventListener('pointermove', (e) => {
   state.frames[drag.i].lms[drag.k] = { x: nx, y: ny, visibility: 1 };
   drawFrame(drag.i);
 });
-const endDrag = () => { if (drag) { drag = null; updateToolState(); } };
+const endDrag = () => {
+  if (!drag) return;
+  const d = drag;
+  drag = null;
+  if (d.type === 'bar') trackBar();
+  if (d.type === 'point') state.frames = applyCorrections(state.cleaned, carryCorrections());
+  updateToolState();
+  drawFrame(currentIndex());
+};
 canvas.addEventListener('pointerup', endDrag);
 canvas.addEventListener('pointercancel', endDrag);
 
@@ -1381,12 +1562,66 @@ function analyzeNow(foot) {
     width: canvas.width, height: canvas.height,
     heightCm: state.inputs.heightCm, gender: state.inputs.gender,
     barCm: state.inputs.barCm, bar: barGround(), overrides: state.overrides,
-    takeoffFoot: foot,
+    takeoffFoot: foot, jumpNear: state.jumpNear ?? state.barAnchors?.[0]?.index ?? null,
   });
 }
 
+// Your fixes, plus each fix carried to the frames around it: the joint is
+// followed by its look from the frame you fixed, keeping your correction,
+// until the model's own point agrees again (at most half a second each way).
+function carryCorrections() {
+  const out = {};
+  const C = state.corrections || {};
+  const n = state.cleaned.length;
+  const D = state.detail;
+  const w = D ? D.w : canvas.width, h = D ? D.h : canvas.height;
+  const grays = D ? D.grays : new Array(n).fill(null);
+  const reach = Math.max(3, Math.round(state.fps * 0.5));
+  const body = (state.analysis?.info.bodyPx || canvas.height * 0.3) * (w / canvas.width);
+  const agree = Math.max(1.5, body * 0.025);
+  const model = (k, j) => { const l = state.cleaned[k]?.lms; return l ? { x: l[j].x * w, y: l[j].y * h } : null; };
+  const byJoint = {};
+  for (const [fi, c] of Object.entries(C)) for (const [j, p] of Object.entries(c)) (byJoint[j] ||= []).push({ index: Number(fi), x: p.x * w, y: p.y * h });
+  const acc = {}; // frame -> joint -> {sx, sy, wt}
+  for (const [j, anchors] of Object.entries(byJoint)) {
+    for (const a of anchors) {
+      const predict = (k, prev, kp) => {
+        const m = model(k, j), mp = model(kp, j);
+        return m && mp ? { x: m.x + prev.x - mp.x, y: m.y + prev.y - mp.y } : prev;
+      };
+      for (const dir of [1, -1]) {
+        const end = Math.max(0, Math.min(n - 1, a.index + dir * reach));
+        if (end === a.index) continue;
+        const tr = followPoint(grays, w, h, a.index, end, a, { predict, search: 5, minScore: 0.6 });
+        for (let k = a.index + dir; dir > 0 ? k <= end : k >= end; k += dir) {
+          if (C[k] && C[k][j]) break; // stop at your next fix of this joint
+          const p = tr.get(k), m = model(k, j);
+          if (!p || !m) break;
+          if (Math.hypot(p.x - m.x, p.y - m.y) < agree) break; // the model has it again
+          const dist = Math.abs(k - a.index);
+          const wt = dist <= reach / 2 ? 1 : 1 - (dist - reach / 2) / (reach / 2 + 1);
+          const cell = ((acc[k] ||= {})[j] ||= { wt: 0, dx: 0, dy: 0 });
+          cell.dx += (p.x - m.x) * wt; cell.dy += (p.y - m.y) * wt; cell.wt += wt;
+        }
+      }
+    }
+  }
+  state.carried = {};
+  for (const [k, joints] of Object.entries(acc)) {
+    for (const [j, c] of Object.entries(joints)) {
+      const m = model(Number(k), j);
+      const f = 1 / Math.max(1, c.wt); // several fixes nearby: average them
+      const x = (m.x + c.dx * f) / w, y = (m.y + c.dy * f) / h;
+      (out[k] ||= {})[j] = { x, y };
+      (state.carried[k] ||= {})[j] = true;
+    }
+  }
+  for (const [k, c] of Object.entries(C)) for (const [j, p] of Object.entries(c)) (out[k] ||= {})[j] = p;
+  return out;
+}
+
 function runAnalysis() {
-  state.frames = applyCorrections(state.cleaned, state.corrections);
+  state.frames = applyCorrections(state.cleaned, carryCorrections());
   const foot = state.inputs.takeoffFoot;
   // If the athlete told us their takeoff foot and the model has left and
   // right the wrong way round, flip every frame once.
@@ -1396,7 +1631,7 @@ function runAnalysis() {
     if (probe.info.contactFound && probe.info.takeoffLeg !== foot) {
       state.cleaned = flipSides(state.cleaned);
       state.flipped = true;
-      state.frames = applyCorrections(state.cleaned, state.corrections);
+      state.frames = applyCorrections(state.cleaned, carryCorrections());
     }
   }
   state.analysis = analyzeNow(foot);
@@ -1466,14 +1701,18 @@ async function retrack(frame, point) {
     const pose = personAt(lm, { x: point.x * VW, y: point.y * VH });
     if (!pose) { setStatus('Could not find a person there. Try a frame where the jumper is clearer.', true); return; }
     $('progress').hidden = false;
-    const { frames, cumNorm } = await followJumper(lm, state.times, { frame, pose }, (p) => {
+    const { frames, cumNorm, detail } = await followJumper(lm, state.times, { frame, pose }, (p) => {
       $('progress').value = p;
       setStatus(`Following the person you picked… ${Math.round(p * 100)}%`);
     });
     $('progress').hidden = true;
-    state.cum = cumNorm;
+    state.cumRaw = cumNorm;
+    state.detail = detail;
+    trackBar();
     state.cleaned = cleanFrames(frames);
     state.corrections = {};
+    state.carried = {};
+    state.jumpNear = null;
     state.overrides = {};
     state.flipChecked = false;
     state.flipped = false;
@@ -1498,8 +1737,9 @@ if (location.hash === '#selftest') {
     state = {
       synthetic: true, start: 0, fps: 30, slow: 1, times: null, cum: null,
       inputs: { heightCm: 180, gender: 'male', barCm, result, quality: 'standard', units, takeoffFoot, startSeconds: 0, file: file.name },
-      corrections: {}, overrides: {}, frames: null, analysis: null, images: {},
-      barMarks: bar ? { index: 0, ...bar } : null, barSource: bar ? 'marked by you' : null,
+      corrections: {}, carried: {}, overrides: {}, frames: null, analysis: null, images: {},
+      barAnchors: bar ? [{ index: 0, ...bar }] : [], barMarks: bar ? { index: 0, ...bar } : null, barTrack: null, cumRaw: null, detail: null,
+      barSource: bar ? 'marked by you' : null,
       mode: 'view', barTaps: [], flipped: false, flipChecked: false,
     };
     state.cleaned = cleanFrames(frames);

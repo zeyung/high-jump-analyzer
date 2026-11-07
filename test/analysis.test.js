@@ -154,3 +154,12 @@ test('flight numbers survive frames that latch onto someone else', () => {
   assert.ok(a.info.flightFrames >= 10);
   assert.ok(a.keyFrames.peak >= 48 && a.keyFrames.peak <= 52, `peak ${a.keyFrames.peak}`);
 });
+
+test('jumpNear keeps the peak near the jump', async () => {
+  const { syntheticJump, W, H } = await import('./synthetic.js');
+  const frames = syntheticJump();
+  const opts = { width: W, height: H, heightCm: 180, gender: 'male' };
+  const free = analyzeJump(frames, opts);
+  const hinted = analyzeJump(frames, { ...opts, jumpNear: free.keyFrames.peak });
+  assert.equal(hinted.keyFrames.peak, free.keyFrames.peak);
+});
