@@ -51,6 +51,14 @@
           </select>
         </label>
         <label class="field">
+          <span>Takeoff foot</span>
+          <select id="takeoffFoot">
+            <option value="">Not sure</option>
+            <option value="left">Left foot</option>
+            <option value="right">Right foot</option>
+          </select>
+        </label>
+        <label class="field">
           <span>Start at (seconds)</span>
           <input type="number" id="start" min="0" step="0.1" value="0" inputmode="decimal">
         </label>
@@ -87,18 +95,45 @@
         <summary>How to film for the best result</summary>
         <ul>
           <li>Film from the takeoff side with the bar running across the picture, so the camera sees the last steps, the takeoff and the bar.</li>
-          <li>Get both bar ends in frame: the app finds the bar and uses your bar height as the scale for every measurement.</li>
+          <li>Get both bar ends in frame: you mark the bar before tracking, and your bar height becomes the scale for every measurement.</li>
+          <li>A still camera on a tripod is best. If you pan to follow the jumper, the app corrects for it, but smooth slow pans work best.</li>
           <li>Keep the whole body in frame from the last 4-5 steps through the landing, and fill as much of the picture as you can.</li>
-          <li>Hold the phone still (a tripod helps), do not zoom, and film in good light.</li>
+          <li>Do not zoom during the jump, and film in good light.</li>
           <li>Slow-motion clips work: set Clip speed to match (most phones film slow-mo at 4× or 8×).</li>
           <li>One jump per clip. Up to 15 seconds is analyzed from the start time.</li>
         </ul>
       </details>
 
-      <button type="submit" id="go">Analyze jump</button>
+      <button type="submit" id="go">Next: pick the jumper</button>
       <p class="status" id="status" role="status"></p>
       <progress id="progress" value="0" max="1" hidden></progress>
     </form>
+  </section>
+
+  <section class="card" id="pick" hidden>
+    <h2>Pick the jumper and the bar</h2>
+    <ol class="steps-list">
+      <li>Use the slider to find a frame where the jumper is clearly visible, then tap the jumper.</li>
+      <li>Optional: tap the jumper again on a frame where they are over the bar. It keeps tracking on the jumper through the flight.</li>
+      <li id="pickBarStep">Tap the two ends of the bar, then the floor directly under it. Your bar height becomes the measuring stick for the jump.</li>
+    </ol>
+    <div class="stage"><canvas id="setupCanvas" class="tapping"></canvas></div>
+    <div class="controls">
+      <button type="button" id="setupPrev" class="icon" aria-label="Previous frame">‹</button>
+      <button type="button" id="setupNext" class="icon" aria-label="Next frame">›</button>
+      <input type="range" id="setupScrub" min="0" max="0" value="0" aria-label="Frame">
+    </div>
+    <div class="tools">
+      <button type="button" id="tapJumper" class="secondary active">Tap: the jumper</button>
+      <button type="button" id="tapBar" class="secondary">Tap: the bar ends</button>
+      <button type="button" id="clearSetupBar" class="link" hidden>Clear the bar</button>
+    </div>
+    <p class="hint" id="setupHint" role="status"></p>
+    <div class="tools">
+      <button type="button" id="analyze" disabled>Analyze jump</button>
+      <button type="button" id="backToForm" class="link">Back</button>
+    </div>
+    <p class="status" id="setupStatus" role="status"></p>
   </section>
 
   <section class="card" id="viewer" hidden>

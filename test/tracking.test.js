@@ -110,3 +110,15 @@ test('rejects a pose with impossible proportions', () => {
   const faint = jump[10].lms.map((p) => ({ ...p, visibility: 0.1 }));
   assert.equal(plausiblePose(faint), false);
 });
+
+import { flipSides } from '../tracking.js';
+
+test('flipSides swaps left and right everywhere', () => {
+  const jump = syntheticJump();
+  const f = flipSides(jump);
+  assert.deepEqual(f[10].lms[27], jump[10].lms[28]);
+  assert.deepEqual(f[10].lms[11], jump[10].lms[12]);
+  assert.deepEqual(f[10].lms[0], jump[10].lms[0]);
+  const a = analyzeJump(f, opts);
+  assert.equal(a.info.takeoffLeg, 'right'); // the synthetic jumper takes off from the left
+});

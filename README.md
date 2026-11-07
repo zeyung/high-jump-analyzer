@@ -13,17 +13,18 @@ Upload a video of one high jump and get:
 
 Everything runs in your browser using [MediaPipe Pose](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker). Your video is never uploaded.
 
-## How tracking works
+## How it works
 
-1. **Find everyone.** The pose model looks at every frame on its own (so a wrong lock-on cannot carry over) and reports every person it sees.
-2. **Pick the jumper.** Detections are linked into tracks, and the track that actually runs and jumps wins. People the model imagines in the landing mat, crowd or equipment barely move, so they lose. If it still picks wrong, tap **Wrong person? Pick the jumper**.
-3. **Follow up close.** The model runs again on a zoomed crop that follows the jumper frame by frame, giving it several times more pixels of the athlete.
-4. **Clean up.** Left/right mix-ups are fixed, short gaps filled, and jitter smoothed.
-5. **Key moments.** Plant and takeoff come from when the takeoff foot lands and leaves the ground; peak from the highest hip point; landing from when the fall stops. Any of them can be set by hand in **Fix points**.
+1. **Fill in the form**: video, athlete height, bar height, gender, takeoff foot.
+2. **Pick the jumper and the bar** (the pose model loads meanwhile): tap the jumper; optionally tap them again on a frame over the bar; tap the two ends of the bar, then the floor under it.
+3. **Tracking** follows only the person you tapped, with a zoomed crop on every frame. Candidates are scored on distance, body size and confidence, so a coach or athlete standing nearby cannot take over, and the crop is also tried sideways and upside down for the flight over the bar. With two taps it also tracks back from the second tap and joins the runs where they agree.
+4. **Camera pans** are measured from the background and removed, so a handheld, panning phone still works.
+5. **Key moments**: plant and takeoff from the takeoff foot landing and leaving the ground; the peak from the hips' height above the jumper's own feet; landing from when the fall stops. Any of them can be set by hand.
+6. **Heights**: the bar is taken to be exactly the height entered, so it measures the peak hip height and clearance at the depth where the jumper crosses. Without a marked bar, heights are approximate.
 
-## The bar
+## Coaching
 
-Enter the bar height and the app finds the bar in the video on its own (a thin straight line that stays put while the jumper moves), checking it against the athlete's size so it does not pick a fence or the mat edge. That bar is taken to be exactly the height you entered, which sets the scale for the vertical jump, hip height and clearance. Use **Adjust the bar** to drag its ends if the line is off.
+The report lists what went well, what to fix first (ranked by score and phase weight), drills for the weakest phase, approach and technique fundamentals (J-curve, last-step rhythm, plant, drive, bar clearance) and a practice checklist (consistent filming, measured marks, logging jumps, one change at a time). It also measures takeoff contact time and the rhythm and length of the last steps.
 
 ## On the video
 
@@ -35,8 +36,9 @@ Each joint has its own color: a solid dot for the left side and a ring for the r
 
 ## Filming tips
 
-- Film from the takeoff side with the bar running across the picture.
-- Keep both standards and the floor under them in frame so you can mark the bar.
+- Film the takeoff side-on, with the bar running across the picture. Takeoff angle, approach speed and lean are only accurate side-on.
+- Keep a bar end and the floor under it in frame so you can mark the bar.
+- A tripod is best; a smooth pan to follow the jumper also works.
 - Keep the whole body in frame from the last 4-5 steps through the landing.
 - Hold the camera still and do not zoom.
 - One jump per clip; up to 15 seconds is analyzed from the start time you pick.
@@ -53,7 +55,9 @@ These are estimates from a single 2D video, not lab measurements. Your height se
 
 - `analysis.js`: the jump math (no browser needed).
 - `tracking.js`: picking the jumper and cleaning up the pose output.
-- `bar.js`: finding the bar in the video.
+- `bar.js`: finding line candidates for the bar (kept for experiments).
+- `motion.js`: measuring and removing camera pans.
+- `coaching.js`: feedback, drills, fundamentals and the practice checklist.
 - `app.js`: video, pose model, drawing and report.
 - `npm test`: runs the tests on synthetic jumps (`test/`).
 - Serve the folder with any static server, for example `python3 -m http.server`.

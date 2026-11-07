@@ -135,6 +135,21 @@ export function smoothFrames(frames, radius = 1) {
   });
 }
 
+/**
+ * Swap every left/right landmark pair in every frame. Used when the athlete
+ * says which foot they jump off and the model has the sides the wrong way
+ * round (common when filmed from behind).
+ */
+export function flipSides(frames) {
+  const pairs = Object.values(GROUPS).flat();
+  return frames.map((f) => {
+    if (!f.lms) return f;
+    const lms = copy(f.lms);
+    for (const [l, r] of pairs) [lms[l], lms[r]] = [lms[r], lms[l]];
+    return { ...f, lms };
+  });
+}
+
 /** Overwrite points the user dragged by hand. corrections: {frameIndex: {landmark: {x, y}}} */
 export function applyCorrections(frames, corrections) {
   return frames.map((f, i) => {

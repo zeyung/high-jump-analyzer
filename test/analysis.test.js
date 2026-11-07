@@ -120,11 +120,37 @@ test('a marked bar sets the bar line and the scale', () => {
   const y = (560 - 200) / 600;
   const bar = { a: { x: 0.2, y }, b: { x: 0.9, y }, ground: { x: 0.9, y: 560 / 600 } };
   const a = analyzeJump(frames, { ...opts, barCm: 120, bar });
-  assert.equal(a.info.scaleSource, 'bar (floor marked)');
+  assert.match(a.info.scaleSource, /bar over the bar/);
   assert.equal(a.info.clearance.method, 'marked bar');
-  assert.ok(Math.abs(a.info.cmPerPx - 0.6) < 1e-9);
+  assert.ok(Math.abs(a.info.barScale - 0.6) < 1e-9);
+  assert.equal(a.info.verticalFrom, 'bar');
+  // Peak hip from the bar agrees with the true rise (100 px * 0.6 = 60 cm).
+  assert.ok(Math.abs(a.info.verticalJump - 60) < 4, `vertical ${a.info.verticalJump}`);
   // Same bar via bar height alone should give nearly the same hip clearance.
   const b = analyzeJump(frames, { ...opts, barCm: 120 });
   const hip = (r) => r.info.clearance.parts.find((p) => p.key === 'hips').cm;
   assert.ok(Math.abs(hip(a) - hip(b)) < 4, `${hip(a)} vs ${hip(b)}`);
+});
+
+test('a known takeoff foot is searched first', () => {
+  const frames = syntheticJump({ lean: 15, launch: 48, risePx: 100 });
+  const a = analyzeJump(frames, { ...opts, takeoffFoot: 'left' });
+  assert.equal(a.info.takeoffLeg, 'left');
+  assert.equal(a.keyFrames.takeoff, 39);
+  // Asking for the right foot finds the right foot's last contact instead (earlier).
+  const b = analyzeJump(frames, { ...opts, takeoffFoot: 'right' });
+  assert.equal(b.info.takeoffLeg, 'right');
+  assert.ok(b.keyFrames.takeoff < 39);
+});
+
+test('flight numbers survive frames that latch onto someone else', () => {
+  const clean = syntheticJump({ lean: 15, launch: 48, risePx: 100 });
+  // Frames 47-52 (near the top of the flight) show a person standing lower down.
+  const bystander = clean[20].lms.map((p) => ({ ...p, x: p.x + 0.05 }));
+  const dirty = clean.map((f, i) => (i >= 47 && i <= 52 ? { ...f, lms: bystander } : f));
+  const a = analyzeJump(dirty, opts);
+  assert.ok(Math.abs(a.metrics.rise.value - 60) < 4, `rise ${a.metrics.rise.value}`);
+  assert.ok(Math.abs(a.metrics.takeoffAngle.value - 48) < 3, `launch ${a.metrics.takeoffAngle.value}`);
+  assert.ok(a.info.flightFrames >= 10);
+  assert.ok(a.keyFrames.peak >= 48 && a.keyFrames.peak <= 52, `peak ${a.keyFrames.peak}`);
 });
