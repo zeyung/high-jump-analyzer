@@ -463,6 +463,13 @@ $('exportData').addEventListener('click', async () => {
 // ---------- report ----------
 const color = (s) => (s >= 85 ? 'var(--good)' : s >= 60 ? 'var(--mid)' : 'var(--bad)');
 const fmt = (v, d) => (typeof v === 'number' ? (Number.isFinite(v) ? v.toFixed(d) : 'n/a') : v);
+const ftIn = (cm) => {
+  const total = cm / 2.54;
+  let ft = Math.floor(total / 12), inch = Math.round(total - ft * 12);
+  if (inch === 12) { ft += 1; inch = 0; }
+  return `${ft} ft ${inch} in`;
+};
+const showHeight = (cm, units) => (units === 'ftin' ? `${ftIn(cm)} (${Math.round(cm)} cm)` : `${Math.round(cm)} cm`);
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const signed = (v) => `${v >= 0 ? '+' : ''}${Math.round(v)} cm`;
 
@@ -471,7 +478,7 @@ function clearanceHtml(a, inputs) {
   const vertical = `<div class="stats">
       <div><div class="l">Vertical jump (hip rise)</div><div class="n">${fmt(i.verticalJump, 0)} cm</div></div>
       <div><div class="l">Peak hip height</div><div class="n">${fmt(i.peakHipHeight, 0)} cm</div></div>
-      ${i.barCm !== null ? `<div><div class="l">Bar</div><div class="n">${i.barCm} cm</div></div>
+      ${i.barCm !== null ? `<div><div class="l">Bar</div><div class="n">${inputs.units === 'ftin' ? ftIn(i.barCm) : `${i.barCm} cm`}</div></div>
       <div><div class="l">Hips vs bar</div><div class="n">${signed(i.peakHipHeight - i.barCm)}</div></div>` : ''}
     </div>`;
   if (!i.clearance) {
@@ -522,7 +529,7 @@ function reportHtml() {
     <div class="score-head">
       <div class="score-big" style="color:${color(a.overall)}">${a.overall}<small> / 100</small></div>
       <div><div class="rating">${a.rating}</div>
-        <div class="note">${inputs.gender === 'female' ? 'Female' : 'Male'}, ${inputs.heightCm} cm${i.barCm !== null ? ` · bar ${i.barCm} cm` : ''} · takeoff leg: ${i.takeoffLeg}</div></div>
+        <div class="note">${inputs.gender === 'female' ? 'Female' : 'Male'}, ${showHeight(inputs.heightCm, inputs.units)}${i.barCm !== null ? ` · bar ${showHeight(i.barCm, inputs.units)}` : ''} · takeoff leg: ${i.takeoffLeg}</div></div>
     </div>
     <div class="phases">${phases}</div>
   </section>
@@ -671,7 +678,7 @@ $('form').addEventListener('submit', async (e) => {
   const slow = Number($('slowmo').value) || 1;
   const result = $('result').value || null;
   if (!file) return setStatus('Choose a video first.', true);
-  if (!(heightCm >= 100 && heightCm <= 230)) return setStatus('Enter a height between 100 and 230 cm (3 ft 4 in to 7 ft 6 in).', true);
+  if (!(heightCm >= 100 && heightCm <= 230)) return setStatus('Enter the athlete height: between 3 ft 4 in and 7 ft 6 in (100 to 230 cm).', true);
   if (!gender) return setStatus('Choose a gender so the targets can be adjusted.', true);
   if (barCm !== null && !(barCm >= 50 && barCm <= 260)) return setStatus('Enter a bar height between 50 and 260 cm (1 ft 8 in to 8 ft 6 in), or leave it empty.', true);
 
@@ -698,7 +705,7 @@ $('form').addEventListener('submit', async (e) => {
     });
     $('progress').hidden = true;
 
-    await showResults(posesPerFrame, start, q.fps, slow, { heightCm, gender, barCm, result, quality, startSeconds: start, file: file.name });
+    await showResults(posesPerFrame, start, q.fps, slow, { heightCm, gender, barCm, result, quality, units: $('units').value, startSeconds: start, file: file.name });
   } catch (err) {
     console.error(err);
     $('progress').hidden = true;
