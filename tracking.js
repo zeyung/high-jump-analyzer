@@ -151,3 +151,124 @@ export function cleanTracking(posesPerFrame, { smoothRadius = 1, maxGap = 5 } = 
   const picked = pickJumper(posesPerFrame);
   return smoothFrames(fillGaps(fixSwaps(picked), maxGap), smoothRadius);
 }
+
+// ---------- Multi-person tracks and choosing the jumper ----------
+// The pose model sometimes "sees" people in the landing mat, crowd or
+// equipment. Those ghosts barely move. The jumper runs across the frame and
+// rises, so tracks are scored by motion, not by size.
+
+const KEY_POINTS = [0, 11, 12, 23, 24, 25, 26, 27, 28];
+
+export function meanVisibility(lms, idx = KEY_POINTS) {
+  return idx.reduce((s, k) => s + (lms[k].visibility ?? 1), 0) / idx.length;
+}
+
+/** Bounding box of the main body points, normalized: {cx, cy, w, h, size}. */
+export function poseBox(lms, aspect = 1) {
+  const idx = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const k of idx) {
+    const p = lms[k];
+    x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
+  }
+  const w = x1 - x0, h = y1 - y0;
+  // size in "height units" so a horizontal body (in flight) counts the same.
+  return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w, h, size: Math.max(w * aspect, h) };
+}
+
+/**
+ * Is this a believable human pose? Rejects ghosts with impossible limb
+ * proportions or low confidence.
+ */
+export function plausiblePose(lms, aspect = 1) {
+  if (!lms || lms.length < 33) return false;
+  if (meanVisibility(lms) < 0.35) return false;
+  const d = (a, b) => Math.hypot((lms[a].x - lms[b].x) * aspect, lms[a].y - lms[b].y);
+  const thighL = d(23, 25), shankL = d(25, 27), thighR = d(24, 26), shankR = d(26, 28);
+  const torso = Math.hypot(((lms[11].x + lms[12].x) / 2 - (lms[23].x + lms[24].x) / 2) * aspect, (lms[11].y + lms[12].y) / 2 - (lms[23].y + lms[24].y) / 2);
+  const leg = (thighL + shankL + thighR + shankR) / 2;
+  if (leg <= 0 || torso <= 0) return false;
+  const ratio = (a, b) => a / Math.max(b, 1e-6);
+  if (ratio(thighL, shankL) > 2.6 || ratio(shankL, thighL) > 2.6) return false;
+  if (ratio(thighR, shankR) > 2.6 || ratio(shankR, thighR) > 2.6) return false;
+  if (ratio(torso, leg) > 1.6 || ratio(leg, torso) > 4) return false;
+  return true;
+}
+
+/**
+ * Link detections across frames into tracks by nearest hip position.
+ * detections: [{t, poses: [lms]}]. Returns [{id, items: [{frame, lms}]}].
+ */
+export function buildTracks(detections, { maxStep = 0.12, maxMissing = 0.5, aspect = 1 } = {}) {
+  const tracks = [];
+  let nextId = 0;
+  detections.forEach(({ t, poses }, frame) => {
+    const cands = (poses || []).filter((p) => plausiblePose(p, aspect));
+    const taken = new Set();
+    // Match existing live tracks, closest first.
+    const pairs = [];
+    for (const tr of tracks) {
+      const last = tr.items[tr.items.length - 1];
+      const dt = t - tr.lastT;
+      if (dt > maxMissing) continue;
+      const lh = hipMid(last.lms);
+      cands.forEach((c, ci) => {
+        const ch = hipMid(c);
+        const dd = Math.hypot((ch.x - lh.x) * aspect, ch.y - lh.y);
+        const allowed = maxStep * Math.max(1, dt / (1 / 30));
+        if (dd <= allowed) pairs.push({ tr, ci, dd });
+      });
+    }
+    pairs.sort((a, b) => a.dd - b.dd);
+    const used = new Set();
+    for (const { tr, ci } of pairs) {
+      if (used.has(tr.id) || taken.has(ci)) continue;
+      tr.items.push({ frame, lms: cands[ci] });
+      tr.lastT = t;
+      used.add(tr.id); taken.add(ci);
+    }
+    cands.forEach((c, ci) => {
+      if (taken.has(ci)) return;
+      tracks.push({ id: nextId++, items: [{ frame, lms: c }], lastT: t });
+    });
+  });
+  return tracks;
+}
+
+/** How much a track looks like the jumper: long, confident and moving. */
+export function scoreTrack(track, frameCount, aspect = 1) {
+  if (track.items.length < 3) return 0;
+  const hips = track.items.map((it) => hipMid(it.lms));
+  const xs = hips.map((p) => p.x * aspect), ys = hips.map((p) => p.y);
+  const travel = (Math.max(...xs) - Math.min(...xs)) + (Math.max(...ys) - Math.min(...ys));
+  const sizes = track.items.map((it) => poseBox(it.lms, aspect).size).sort((a, b) => a - b);
+  const size = sizes[sizes.length >> 1];
+  const vis = track.items.reduce((s, it) => s + meanVisibility(it.lms), 0) / track.items.length;
+  const coverage = track.items.length / Math.max(1, frameCount);
+  // Travel measured in body sizes: a jumper covers several, a ghost almost none.
+  const travelBodies = travel / Math.max(size, 1e-6);
+  return Math.min(travelBodies, 8) * vis * Math.sqrt(coverage);
+}
+
+export function pickTrack(tracks, frameCount, aspect = 1) {
+  let best = null, bestS = 0;
+  for (const tr of tracks) {
+    const s = scoreTrack(tr, frameCount, aspect);
+    if (s > bestS) { bestS = s; best = tr; }
+  }
+  return best;
+}
+
+/** The track whose pose on this frame is under (or nearest) a tapped point. */
+export function trackAt(tracks, frame, point, aspect = 1) {
+  let best = null, bestD = Infinity;
+  for (const tr of tracks) {
+    const it = tr.items.find((x) => x.frame === frame);
+    if (!it) continue;
+    const b = poseBox(it.lms, aspect);
+    const inside = Math.abs(point.x - b.cx) <= b.w / 2 + 0.02 && Math.abs(point.y - b.cy) <= b.h / 2 + 0.02;
+    const d = Math.hypot((point.x - b.cx) * aspect, point.y - b.cy) - (inside ? 10 : 0);
+    if (d < bestD) { bestD = d; best = tr; }
+  }
+  return best;
+}

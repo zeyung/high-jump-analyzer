@@ -25,6 +25,7 @@
   }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body {
   margin: 0;
   background: var(--bg);
@@ -91,6 +92,24 @@ canvas.tapping { cursor: crosshair; touch-action: none; }
 .stats .l { color: var(--muted); font-size: 0.85rem; }
 .stats .n { font-size: 1.4rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 .verdict { font-size: 1.2rem; font-weight: 700; margin: 4px 0 12px; }
+.viewer-grid { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 16px; align-items: start; }
+@media (max-width: 760px) { .viewer-grid { grid-template-columns: minmax(0, 1fr); } }
+.side { display: flex; flex-direction: column; gap: 12px; }
+.readout { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 0.88rem; }
+.ro-row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+.ro-row span { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.ro-row strong { font-variant-numeric: tabular-nums; }
+.legend { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 0.86rem; }
+.lg-head { display: flex; justify-content: space-between; align-items: baseline; margin: 4px 0 6px; }
+.lg-grid { display: grid; grid-template-columns: 1fr; gap: 2px; }
+.lg-item { display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 2px 0; }
+.lg-item input { margin: 0; }
+.lg-item svg { flex: none; background: #3a3f48; border-radius: 4px; }
+.lg-note { color: var(--muted); font-size: 0.8rem; margin: 6px 0 10px; }
+button.link { background: none; border: 0; padding: 0; color: var(--accent); font-weight: 500; font-size: 0.85rem; cursor: pointer; }
+button.icon { padding: 8px 12px; background: var(--bg); color: var(--text); border: 1px solid var(--line); font-size: 1.1rem; line-height: 1; }
+button.small { padding: 6px 12px; font-size: 0.85rem; }
+.tools-label { color: var(--muted); font-size: 0.88rem; align-self: center; }
 .foot { color: var(--muted); font-size: 0.85rem; padding-bottom: 32px; }
 
 /* Report */

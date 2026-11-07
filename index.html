@@ -87,10 +87,10 @@
         <summary>How to film for the best result</summary>
         <ul>
           <li>Film from the takeoff side with the bar running across the picture, so the camera sees the last steps, the takeoff and the bar.</li>
-          <li>Get both standards and the floor under them in frame so you can mark the bar.</li>
+          <li>Get both bar ends in frame: the app finds the bar and uses your bar height as the scale for every measurement.</li>
+          <li>Keep the whole body in frame from the last 4-5 steps through the landing, and fill as much of the picture as you can.</li>
+          <li>Hold the phone still (a tripod helps), do not zoom, and film in good light.</li>
           <li>Slow-motion clips work: set Clip speed to match (most phones film slow-mo at 4× or 8×).</li>
-          <li>Keep the whole body in frame from the last 4-5 steps through the landing.</li>
-          <li>Hold the phone still (a tripod helps) and do not zoom during the jump.</li>
           <li>One jump per clip. Up to 15 seconds is analyzed from the start time.</li>
         </ul>
       </details>
@@ -103,19 +103,38 @@
 
   <section class="card" id="viewer" hidden>
     <h2>Annotated video</h2>
-    <div class="stage"><canvas id="canvas"></canvas></div>
-    <div class="controls">
-      <button type="button" id="play">Play</button>
-      <input type="range" id="scrub" min="0" max="0" value="0" aria-label="Frame">
+    <div class="viewer-grid">
+      <div>
+        <div class="stage"><canvas id="canvas"></canvas></div>
+        <div class="controls">
+          <button type="button" id="prevFrame" class="icon" aria-label="Previous frame">‹</button>
+          <button type="button" id="play">Play</button>
+          <button type="button" id="nextFrame" class="icon" aria-label="Next frame">›</button>
+          <input type="range" id="scrub" min="0" max="0" value="0" aria-label="Frame">
+        </div>
+        <div class="keys" id="keys"></div>
+        <div class="tools">
+          <button type="button" id="pickJumper" class="secondary">Wrong person? Pick the jumper</button>
+          <button type="button" id="markBar" class="secondary">Mark the bar</button>
+          <button type="button" id="clearBar" class="secondary" hidden>Remove bar</button>
+          <button type="button" id="fixPoints" class="secondary">Fix points</button>
+          <button type="button" id="applyFixes" hidden>Re-analyze with fixes</button>
+        </div>
+        <div class="tools" id="keyTools" hidden>
+          <span class="tools-label">Set this frame as:</span>
+          <button type="button" id="set-plant" class="secondary small">Plant</button>
+          <button type="button" id="set-takeoff" class="secondary small">Takeoff</button>
+          <button type="button" id="set-peak" class="secondary small">Peak</button>
+          <button type="button" id="set-landing" class="secondary small">Landing</button>
+          <button type="button" id="resetKeys" class="link">Back to automatic</button>
+        </div>
+        <p class="hint" id="hint" role="status"></p>
+      </div>
+      <aside class="side">
+        <div class="readout" id="readout" aria-live="polite"></div>
+        <div class="legend" id="legend"></div>
+      </aside>
     </div>
-    <div class="keys" id="keys"></div>
-    <div class="tools">
-      <button type="button" id="markBar" class="secondary">Mark the bar</button>
-      <button type="button" id="clearBar" class="secondary" hidden>Remove bar marks</button>
-      <button type="button" id="fixPoints" class="secondary">Fix points</button>
-      <button type="button" id="applyFixes" hidden>Re-analyze with fixes</button>
-    </div>
-    <p class="hint" id="hint" role="status"></p>
     <div class="downloads">
       <button type="button" id="dlVideo" class="secondary">Download annotated video</button>
       <button type="button" id="dlReport" class="secondary">Download report</button>

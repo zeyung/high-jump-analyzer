@@ -11,8 +11,11 @@ export const LM = {
 };
 
 const G_CM = 981; // gravity, cm/s^2
-// Nose sits at about 89% of standing height above the ankle joint.
-const NOSE_TO_ANKLE_RATIO = 0.89;
+// Body proportions as a fraction of standing height: shoulder-to-hip torso
+// about 0.29 and hip-knee-ankle leg about 0.49, together 0.78. The ankle
+// joint is about 0.04 above the floor.
+const SEGMENT_RATIO = 0.78;
+const ANKLE_HEIGHT_RATIO = 0.04;
 
 export const SOURCES = [
   'Dapena, J. (1980). Mechanics of translation in the Fosbury-flop. Medicine and Science in Sports and Exercise, 12(1), 37-44.',
@@ -216,13 +219,14 @@ function backBy(V, k, dt) {
 
 /**
  * frames: [{t: seconds, lms: [{x, y, visibility}] x33 normalized, or null}]
- * opts: {width, height, heightCm, gender: 'male'|'female', barCm?, bar?}
- * bar (optional, needs barCm): the bar marked on the video, normalized
- *   {a: {x, y}, b: {x, y}} = the two ends of the bar, and
- *   ground: {x, y} = the floor under one standard. It gives the exact bar
- *   line and a better scale than the athlete's height.
+ * opts: {width, height, heightCm, gender: 'male'|'female', barCm?, bar?, overrides?}
+ * bar (optional, needs barCm): the bar in the video, normalized
+ *   {a: {x, y}, b: {x, y}} = its two ends, and optionally ground: {x, y} =
+ *   the floor under the bar. Without ground, the floor at the takeoff spot is
+ *   used. The bar is taken to be exactly barCm high, which sets the scale.
+ * overrides (optional): {plant, takeoff, peak, landing} frame indices set by hand.
  */
-export function analyzeJump(frames, { width, height, heightCm, gender, barCm = null, bar = null }) {
+export function analyzeJump(frames, { width, height, heightCm, gender, barCm = null, bar = null, overrides = null }) {
   if (barCm !== null && barCm !== undefined && !(barCm >= 50 && barCm <= 260)) {
     throw new Error('Bar height must be between 50 and 260 cm.');
   }
@@ -240,62 +244,150 @@ export function analyzeJump(frames, { width, height, heightCm, gender, barCm = n
 
   const hip = V.map((v) => mid(v.P[LM.lHip], v.P[LM.rHip]));
   const sh = V.map((v) => mid(v.P[LM.lShoulder], v.P[LM.rShoulder]));
-  const ank = V.map((v) => mid(v.P[LM.lAnkle], v.P[LM.rAnkle]));
-  const lowAnkY = V.map((v) => Math.max(v.P[LM.lAnkle].y, v.P[LM.rAnkle].y));
+  const ankles = [V.map((v) => v.P[LM.lAnkle]), V.map((v) => v.P[LM.rAnkle])];
   const hipYs = smooth(hip.map((p) => p.y), 3);
+
+  // Standing height in pixels from rigid body segments, so posture (lean,
+  // bent knees, lying flat in the air) does not change it.
+  const segPx = V.map((v) => {
+    const P = v.P;
+    const torso = dist(mid(P[11], P[12]), mid(P[23], P[24]));
+    const legL = dist(P[23], P[25]) + dist(P[25], P[27]);
+    const legR = dist(P[24], P[26]) + dist(P[26], P[28]);
+    return (torso + Math.max(legL, legR)) / SEGMENT_RATIO;
+  });
+  let bodyPx = percentile(segPx, 0.75);
+
+  const idxOf = (orig) => {
+    if (orig === null || orig === undefined) return null;
+    let best = 0;
+    V.forEach((v, k) => { if (Math.abs(v.i - orig) < Math.abs(V[best].i - orig)) best = k; });
+    return best;
+  };
+  const ov = overrides || {};
 
   // Peak: highest hip position (smallest y, image y points down).
   let peak = 0;
   hipYs.forEach((y, k) => { if (y < hipYs[peak]) peak = k; });
+  if (ov.peak !== undefined && ov.peak !== null) peak = idxOf(ov.peak);
   if (peak < 5) throw new Error('The clip seems to start at or after the peak of the jump. Include the last approach steps.');
 
-  const pre = [...Array(peak).keys()];
-  const bodyPx = percentile(pre.map((k) => dist(V[k].P[LM.nose], ank[k])), 0.9) / NOSE_TO_ANKLE_RATIO;
-  const cmPerPxFromHeight = heightCm / bodyPx;
-  const groundY = percentile(pre.map((k) => lowAnkY[k]), 0.95);
+  // Foot contact: a planted foot stays still in the picture. A foot is in
+  // contact when it barely moves into or out of the frame and is near the
+  // lowest point the feet reached in the last 0.6 s (the local floor).
+  const still = 0.45 * bodyPx; // px per second
+  const speedAt = (s, k, dk) => {
+    const j = k + dk;
+    if (j < 0 || j >= V.length) return Infinity;
+    return dist(ankles[s][k], ankles[s][j]) / Math.abs(V[j].t - V[k].t || 1e-6);
+  };
+  const isStill = (s, k) => Math.min(speedAt(s, k, -1), speedAt(s, k, 1)) < still;
+  const localFloor = (k) => {
+    let m = -Infinity;
+    for (let j = k; j >= 0 && V[k].t - V[j].t <= 0.6; j--) m = Math.max(m, ankles[0][j].y, ankles[1][j].y);
+    return m;
+  };
+  const onGround = (s, k) => isStill(s, k) && ankles[s][k].y >= localFloor(k) - 0.12 * bodyPx;
 
-  // Bar line in pixels, and the scale it gives when marked.
+  let takeoff = -1, side = 0, contactFound = false;
+  for (let k = peak - 1; k >= 0 && takeoff < 0; k--) {
+    for (const s of [0, 1]) if (onGround(s, k)) { takeoff = k; side = s; contactFound = true; break; }
+  }
+  if (takeoff < 0) {
+    // Fallback: last frame before the peak with a foot near the floor.
+    const lowAnkY = V.map((v) => Math.max(v.P[LM.lAnkle].y, v.P[LM.rAnkle].y));
+    const floor = percentile(lowAnkY.slice(0, peak), 0.95);
+    for (let k = peak - 1; k >= 0; k--) if (lowAnkY[k] >= floor - 0.03 * bodyPx) { takeoff = k; break; }
+    if (takeoff < 0) throw new Error('Could not find the takeoff. Make sure the takeoff foot is visible.');
+    side = V[takeoff].P[LM.lAnkle].y >= V[takeoff].P[LM.rAnkle].y ? 0 : 1;
+  }
+  if (ov.takeoff !== undefined && ov.takeoff !== null) {
+    takeoff = idxOf(ov.takeoff);
+    side = V[takeoff].P[LM.lAnkle].y >= V[takeoff].P[LM.rAnkle].y ? 0 : 1;
+  }
+
+  // Plant: the first frame of the takeoff foot's last contact.
+  let plant = takeoff;
+  if (contactFound || (ov.takeoff !== undefined && ov.takeoff !== null)) {
+    while (plant > 0 && onGround(side, plant - 1) && V[takeoff].t - V[plant - 1].t <= 0.35) plant--;
+  }
+  // Smoothing blurs the exact frames where the foot lands and leaves, so
+  // widen the contact while the foot is still within a few cm of its spot.
+  if (contactFound && takeoff > plant) {
+    const xs = [], ys = [];
+    for (let k = plant; k <= takeoff; k++) { xs.push(ankles[side][k].x); ys.push(ankles[side][k].y); }
+    const spot = { x: percentile(xs, 0.5), y: percentile(ys, 0.5) };
+    const near = (k) => dist(ankles[side][k], spot) < 0.05 * bodyPx;
+    while (takeoff + 1 < peak && near(takeoff + 1)) takeoff++;
+    while (plant > 0 && near(plant - 1) && V[takeoff].t - V[plant - 1].t <= 0.35) plant--;
+  }
+  if (plant === takeoff) plant = backBy(V, takeoff, 0.15);
+  if (ov.plant !== undefined && ov.plant !== null) plant = Math.min(idxOf(ov.plant), takeoff);
+  if (peak <= takeoff) peak = Math.min(V.length - 1, takeoff + 1);
+
+  // Landing: the fall stops. After the peak the hips speed up downward,
+  // then decelerate sharply on the mat.
+  let landing = -1;
+  const vy = (k) => {
+    const a = Math.max(0, k - 1), b = Math.min(V.length - 1, k + 1);
+    return (hipYs[b] - hipYs[a]) / Math.max(V[b].t - V[a].t, 1e-6);
+  };
+  let vmax = 0;
+  for (let k = peak + 1; k < V.length && V[k].t - V[peak].t <= 1.2; k++) {
+    const v = vy(k);
+    if (v > vmax) vmax = v;
+    if (vmax > 0.6 * bodyPx && v <= 0.25 * vmax) { landing = k; break; }
+  }
+  if (landing < 0) {
+    for (let k = peak + 1; k < V.length; k++) if (hipYs[k] >= hipYs[takeoff]) { landing = k; break; }
+  }
+  if (landing < 0) landing = V.length - 1;
+  if (ov.landing !== undefined && ov.landing !== null) landing = Math.max(idxOf(ov.landing), peak);
+
+  const curve = backBy(V, plant, 0.25);
+
+  // Scale near takeoff, where the measurements matter (the jumper's size in
+  // the picture changes as they come toward or away from the camera).
+  const near = [];
+  V.forEach((v, k) => { if (Math.abs(v.t - V[takeoff].t) <= 0.5) near.push(segPx[k]); });
+  if (near.length >= 3) bodyPx = percentile(near, 0.75);
+  const cmPerPxFromHeight = heightCm / bodyPx;
+
+  // Floor at the takeoff spot: the planted ankle plus ankle height.
+  const plantFoot = ankles[side][plant];
+  const groundY = plantFoot.y + ANKLE_HEIGHT_RATIO * bodyPx;
+
+  // Bar line and scale. The bar in the video is exactly barCm high.
   let barLine = null, cmPerPx = cmPerPxFromHeight, scaleSource = 'athlete height';
-  if (hasBar && bar && bar.a && bar.b && bar.ground) {
+  if (hasBar && bar && bar.a && bar.b) {
     const A = { x: bar.a.x * width, y: bar.a.y * height };
     const B = { x: bar.b.x * width, y: bar.b.y * height };
-    const Gp = { x: bar.ground.x * width, y: bar.ground.y * height };
-    const yAt = (x) => (B.x === A.x ? (A.y + B.y) / 2 : A.y + ((B.y - A.y) * (x - A.x)) / (B.x - A.x));
+    const yAt = (x) => (Math.abs(B.x - A.x) < 1e-9 ? (A.y + B.y) / 2 : A.y + ((B.y - A.y) * (x - A.x)) / (B.x - A.x));
+    const Gp = bar.ground ? { x: bar.ground.x * width, y: bar.ground.y * height } : { x: plantFoot.x, y: groundY };
     const barPx = Gp.y - yAt(Gp.x);
     if (barPx > 10) {
       cmPerPx = barCm / barPx;
-      scaleSource = 'marked bar';
-      barLine = { x1: A.x, y1: A.y, x2: B.x, y2: B.y, yAt, marked: true };
+      scaleSource = bar.ground ? 'bar (floor marked)' : 'bar';
+      barLine = { x1: A.x, y1: A.y, x2: B.x, y2: B.y, yAt, marked: true, ground: Gp };
     }
   }
   if (hasBar && !barLine) {
+    // No bar found in the video: compare heights in cm only (nothing drawn).
     const y = groundY - barCm / cmPerPx;
     barLine = { x1: 0, y1: y, x2: width, y2: y, yAt: () => y, marked: false };
   }
-  const tol = 0.03 * bodyPx;
 
-  // Takeoff (toe-off): last frame before the peak with a foot on the ground.
-  let takeoff = -1;
-  for (let k = peak - 1; k >= 0; k--) if (lowAnkY[k] >= groundY - tol) { takeoff = k; break; }
-  if (takeoff < 0) throw new Error('Could not find the takeoff. Make sure the takeoff foot is visible.');
-
-  let landing = V.length - 1;
-  for (let k = peak + 1; k < V.length; k++) if (hipYs[k] >= hipYs[takeoff]) { landing = k; break; }
-
-  // Plant (touchdown of the takeoff foot) is about 0.18 s before toe-off;
-  // the curve phase covers the 0.25 s before the plant.
-  const plant = backBy(V, takeoff, 0.18);
-  const curve = backBy(V, plant, 0.25);
-
-  const leanAt = (k) => deg(Math.atan2(Math.abs(sh[k].x - ank[k].x), ank[k].y - sh[k].y));
+  // Lean in the curve: from the supporting (stiller) foot to the shoulders.
   const leanFrames = [];
-  for (let k = curve; k <= plant; k++) leanFrames.push(leanAt(k));
+  for (let k = curve; k <= plant; k++) {
+    const s = Math.min(speedAt(0, k, -1), speedAt(0, k, 1)) <= Math.min(speedAt(1, k, -1), speedAt(1, k, 1)) ? 0 : 1;
+    const A = ankles[s][k];
+    leanFrames.push(deg(Math.atan2(Math.abs(sh[k].x - A.x), A.y - sh[k].y)));
+  }
   const curveLean = leanFrames.reduce((a, b) => a + b, 0) / leanFrames.length;
 
-  // Takeoff leg: the foot still lowest at toe-off.
-  const P0 = V[takeoff].P;
-  const side = P0[LM.lAnkle].y >= P0[LM.rAnkle].y ? 'left' : 'right';
-  const J = side === 'left'
+  const takeoffSide = side === 0 ? 'left' : 'right';
+  const J = side === 0
     ? { sh: LM.lShoulder, hip: LM.lHip, knee: LM.lKnee, ankle: LM.lAnkle }
     : { sh: LM.rShoulder, hip: LM.rHip, knee: LM.rKnee, ankle: LM.rAnkle };
   const Pp = V[plant].P;
@@ -309,11 +401,11 @@ export function analyzeJump(frames, { width, height, heightCm, gender, barCm = n
   for (let k = takeoff; k <= end; k++) { fts.push(V[k].t - V[takeoff].t); fys.push(hip[k].y); fxs.push(hip[k].x); }
   const q = fitQuadratic(fts, fys);
   const vx = Math.abs(linearSlope(fts, fxs));
-  let takeoffAngle = NaN, risePx = hip[takeoff].y - Math.min(...hip.map((p) => p.y));
+  let takeoffAngle = NaN, risePx = hip[takeoff].y - Math.min(...hip.slice(takeoff, end + 1).map((p) => p.y));
   if (q && q.c > 0) {
     takeoffAngle = deg(Math.atan2(-q.b, vx));
     const tv = -q.b / (2 * q.c);
-    risePx = hip[takeoff].y - (q.a + q.b * tv + q.c * tv * tv);
+    if (tv > 0) risePx = hip[takeoff].y - (q.a + q.b * tv + q.c * tv * tv);
   }
   const rise = risePx * cmPerPx;
   const hipAtTakeoff = (groundY - hip[takeoff].y) * cmPerPx;
@@ -396,7 +488,7 @@ export function analyzeJump(frames, { width, height, heightCm, gender, barCm = n
     phases,
     metrics,
     info: {
-      takeoffLeg: side,
+      takeoffLeg: takeoffSide,
       hipHeightAtTakeoff: hipAtTakeoff,
       peakHipHeight,
       barCm: hasBar ? barCm : null,
@@ -410,8 +502,12 @@ export function analyzeJump(frames, { width, height, heightCm, gender, barCm = n
       scaleSource,
       verticalJump: rise,
       clearance,
-      barLine: barLine ? { x1: barLine.x1, y1: barLine.y1, x2: barLine.x2, y2: barLine.y2, marked: barLine.marked } : null,
+      barLine: barLine && barLine.marked ? { x1: barLine.x1, y1: barLine.y1, x2: barLine.x2, y2: barLine.y2, ground: barLine.ground } : null,
       groundY,
+      groundPx: { x: plantFoot.x, y: groundY },
+      peakHipPx: { x: hip[peak].x, y: hip[peak].y },
+      bodyPx,
+      contactFound,
     },
     keyFrames: {
       curve: V[curve].i, plant: V[plant].i, takeoff: V[takeoff].i, peak: V[peak].i, landing: V[landing].i,

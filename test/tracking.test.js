@@ -82,3 +82,31 @@ test('the cleaned pipeline still analyzes a jump with noise, a bystander and gap
   assert.ok(Math.abs(a.metrics.curveLean.value - 15) < 2, `lean ${a.metrics.curveLean.value}`);
   assert.ok(Math.abs(a.metrics.rise.value - 60) < 6, `rise ${a.metrics.rise.value}`);
 });
+
+import { buildTracks, pickTrack, plausiblePose, trackAt } from '../tracking.js';
+
+test('picks the moving jumper over a still ghost on the mat', () => {
+  const jump = syntheticJump();
+  // A larger, confident "person" that never moves (like a ghost in the pit).
+  const ghost = shift(jump[45].lms, 0.1, 0.05, 1.3);
+  const dets = jump.map((f) => ({ t: f.t, poses: [ghost, f.lms] }));
+  const tracks = buildTracks(dets);
+  assert.ok(tracks.length >= 2);
+  const best = pickTrack(tracks, dets.length);
+  assert.ok(best.items.length > 50, `items ${best.items.length}`);
+  const hipX = (l) => (l[23].x + l[24].x) / 2;
+  assert.notEqual(hipX(best.items[10].lms), hipX(ghost));
+  // Tapping the ghost picks the ghost's track.
+  const g = trackAt(tracks, 10, { x: hipX(ghost), y: ghost[23].y });
+  assert.equal(hipX(g.items[0].lms), hipX(ghost));
+});
+
+test('rejects a pose with impossible proportions', () => {
+  const jump = syntheticJump();
+  assert.equal(plausiblePose(jump[10].lms), true);
+  const bad = jump[10].lms.map((p) => ({ ...p }));
+  bad[27] = { ...bad[27], y: bad[27].y + 0.6 }; bad[28] = { ...bad[28], y: bad[28].y + 0.6 }; // shins three times the thighs
+  assert.equal(plausiblePose(bad), false);
+  const faint = jump[10].lms.map((p) => ({ ...p, visibility: 0.1 }));
+  assert.equal(plausiblePose(faint), false);
+});
