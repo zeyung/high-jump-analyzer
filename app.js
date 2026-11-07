@@ -20,12 +20,26 @@ $('units').addEventListener('change', () => {
   $('heightCm').hidden = ft;
   $('heightFt').hidden = !ft;
   $('heightIn').hidden = !ft;
+  $('barCm').hidden = ft;
+  $('barFt').hidden = !ft;
+  $('barIn').hidden = !ft;
 });
 
 function readHeightCm() {
   if ($('units').value === 'cm') return Number($('heightCm').value);
   const ft = Number($('heightFt').value || 0), inch = Number($('heightIn').value || 0);
   return Math.round((ft * 12 + inch) * 2.54);
+}
+
+// Bar height is optional: returns null when left empty.
+function readBarCm() {
+  if ($('units').value === 'cm') {
+    const v = $('barCm').value.trim();
+    return v === '' ? null : Number(v);
+  }
+  const f = $('barFt').value.trim(), i = $('barIn').value.trim();
+  if (f === '' && i === '') return null;
+  return Math.round((Number(f || 0) * 12 + Number(i || 0)) * 2.54);
 }
 
 function setStatus(msg, isError = false) {
@@ -263,7 +277,7 @@ function reportHtml() {
   const rows = Object.values(a.metrics).map((m) => `
     <tr><td>${m.label}</td>
       <td class="num">${fmt(m.value, m.digits)}${m.unit && typeof m.value === 'number' ? ' ' + m.unit : ''}</td>
-      <td class="num">${m.target ? `${m.target[0]}–${m.target[1]} ${m.unit}` : 'Yes'}</td>
+      <td class="num">${m.target ? (m.target[1] === Infinity ? `${m.target[0]} ${m.unit} or more` : `${m.target[0]}–${m.target[1]} ${m.unit}`) : 'Yes'}</td>
       <td class="num" style="color:${color(m.score ?? 0)}">${m.score ?? 'n/a'}</td></tr>`).join('');
   const tips = Object.values(a.metrics).filter((m) => m.tip).sort((x, y) => (x.score ?? 0) - (y.score ?? 0));
   const i = a.info;
@@ -275,7 +289,7 @@ function reportHtml() {
     <div class="score-head">
       <div class="score-big" style="color:${color(a.overall)}">${a.overall}<small> / 100</small></div>
       <div><div class="rating">${a.rating}</div>
-        <div class="note">${inputs.gender === 'female' ? 'Female' : 'Male'}, ${inputs.heightCm} cm · takeoff leg: ${i.takeoffLeg}</div></div>
+        <div class="note">${inputs.gender === 'female' ? 'Female' : 'Male'}, ${inputs.heightCm} cm${i.barCm !== null ? ` · bar ${i.barCm} cm` : ''} · takeoff leg: ${i.takeoffLeg}</div></div>
     </div>
     <div class="phases">${phases}</div>
   </section>
@@ -292,6 +306,9 @@ function reportHtml() {
     <div class="table-wrap"><table><tbody>
       <tr><td>Hip height at takeoff</td><td class="num">${fmt(i.hipHeightAtTakeoff, 0)} cm</td></tr>
       <tr><td>Peak hip height (estimate)</td><td class="num">${fmt(i.peakHipHeight, 0)} cm</td></tr>
+      ${i.barCm !== null ? `
+      <tr><td>Bar height as % of your height</td><td class="num">${fmt(i.barPercentOfHeight, 0)}%</td></tr>
+      <tr><td>Lift needed from takeoff hip height to bar</td><td class="num">${fmt(i.liftNeededForBar, 0)} cm</td></tr>` : ''}
       <tr><td>Time in the air</td><td class="num">${fmt(i.flightTime, 2)} s</td></tr>
       <tr><td>Rise implied by time in the air</td><td class="num">${fmt(i.riseFromFlightTime, 0)} cm</td></tr>
       <tr><td>Body rotation, plant to peak</td><td class="num">${fmt(i.rotation, 0)}°</td></tr>
@@ -300,6 +317,8 @@ function reportHtml() {
   <section class="card">
     <h2>What to work on</h2>
     ${tips.length ? `<ol class="tiplist">${tips.map((m) => `<li><strong>${m.label}.</strong> ${m.tip}</li>`).join('')}</ol>` : '<p>Every measure is inside your target range. Nice jump.</p>'}
+    ${i.barCm === null ? '<p class="note">Add the bar height to see whether your hips peaked over the bar.</p>' : ''}
+    <p class="note">Hip height stands in for your center of mass. In a good flop the body drapes around the bar, so a small negative hip-vs-bar number can still be a clearance.</p>
     <p class="note">These numbers are estimates from a single 2D video, not lab measurements. They assume the camera is roughly side-on to the bar and still. Your height sets the scale for distances; targets are adjusted for your height and gender and are rounded from published elite high jump data, then widened for non-elite jumpers.</p>
     <p class="sources">Sources:<br>${a.sources.join('<br>')}</p>
   </section>`;
@@ -330,7 +349,7 @@ function buildKeyButtons() {
 // ---------- main flow ----------
 async function showResults(frames, start, inputs) {
   setStatus('Measuring the jump…');
-  const analysis = analyzeJump(frames, { width: canvas.width, height: canvas.height, heightCm: inputs.heightCm, gender: inputs.gender });
+  const analysis = analyzeJump(frames, { width: canvas.width, height: canvas.height, heightCm: inputs.heightCm, gender: inputs.gender, barCm: inputs.barCm });
   state = { frames, analysis, start, inputs, images: {} };
   $('viewer').hidden = false;
   $('scrub').max = String(frames.length - 1);
@@ -350,7 +369,7 @@ if (location.hash === '#selftest') {
     canvas.width = W; canvas.height = H;
     const frames = syntheticJump({ lean: 15, launch: 47, risePx: 140, approachPxPerFrame: 37 })
       .map((f) => ({ ...f, t: Math.min(f.t, video.duration - 0.05) }));
-    await showResults(frames, 0, { heightCm: 180, gender: 'male', startSeconds: 0, file: file.name });
+    await showResults(frames, 0, { heightCm: 180, gender: 'male', barCm: 170, startSeconds: 0, file: file.name });
     return state.analysis.overall;
   };
 }
@@ -360,10 +379,12 @@ $('form').addEventListener('submit', async (e) => {
   const file = $('file').files[0];
   const heightCm = readHeightCm();
   const gender = $('gender').value;
+  const barCm = readBarCm();
   const start = Math.max(0, Number($('start').value) || 0);
   if (!file) return setStatus('Choose a video first.', true);
   if (!(heightCm >= 100 && heightCm <= 230)) return setStatus('Enter a height between 100 and 230 cm (3 ft 4 in to 7 ft 6 in).', true);
   if (!gender) return setStatus('Choose a gender so the targets can be adjusted.', true);
+  if (barCm !== null && !(barCm >= 50 && barCm <= 260)) return setStatus('Enter a bar height between 50 and 260 cm (1 ft 8 in to 8 ft 6 in), or leave it empty.', true);
 
   $('go').disabled = true;
   $('viewer').hidden = true;
@@ -387,7 +408,7 @@ $('form').addEventListener('submit', async (e) => {
     });
     $('progress').hidden = true;
 
-    await showResults(frames, start, { heightCm, gender, startSeconds: start, file: file.name });
+    await showResults(frames, start, { heightCm, gender, barCm, startSeconds: start, file: file.name });
   } catch (err) {
     console.error(err);
     $('progress').hidden = true;

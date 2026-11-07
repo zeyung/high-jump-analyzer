@@ -69,3 +69,26 @@ test('rejects clips with no person or bad inputs', () => {
   assert.throws(() => analyzeJump(syntheticJump(), { ...opts, heightCm: 40 }), /Height/);
   assert.throws(() => analyzeJump(syntheticJump(), { ...opts, gender: 'x' }), /Gender/);
 });
+
+test('bar height compares peak hip height with the bar', () => {
+  // Synthetic hip height at takeoff is about 82 cm and the rise 60 cm, so the hips peak near 142 cm.
+  const frames = syntheticJump({ lean: 15, launch: 48, risePx: 100 });
+  const none = analyzeJump(frames, opts);
+  assert.equal(none.metrics.barMargin, undefined);
+  assert.equal(none.info.barCm, null);
+
+  const low = analyzeJump(frames, { ...opts, barCm: 130 });
+  assert.ok(Math.abs(low.metrics.barMargin.value - (low.info.peakHipHeight - 130)) < 1e-9);
+  assert.ok(Math.abs(low.info.peakHipHeight - 142) < 4, `peak ${low.info.peakHipHeight}`);
+  assert.equal(low.metrics.barMargin.score, 100);
+  assert.equal(low.metrics.barMargin.tip, '');
+  assert.ok(Math.abs(low.info.barPercentOfHeight - (100 * 130) / 180) < 1e-9);
+
+  const high = analyzeJump(frames, { ...opts, barCm: 170 });
+  assert.ok(high.metrics.barMargin.value < -20);
+  assert.ok(high.metrics.barMargin.score < 30);
+  assert.ok(high.metrics.barMargin.tip.length > 0);
+  assert.ok(high.overall < low.overall);
+
+  assert.throws(() => analyzeJump(frames, { ...opts, barCm: 400 }), /Bar height/);
+});

@@ -104,6 +104,9 @@ export function targetsFor(gender, heightCm) {
     takeoffAngle: { range: female ? [44, 56] : [42, 52], tol: 15 },
     rise: { range: (female ? [0.3, 0.48] : [0.35, 0.55]).map((r) => Math.round(r * heightCm)), tol: 0.2 * heightCm },
     torsoAtPeak: { range: [0, 25], tol: 30 },
+    // Peak hip height minus bar height. Hips at or above the bar is the aim;
+    // in a good flop the hips pass close over the bar, so there is no upper limit.
+    barMargin: { range: [0, Infinity], tol: 30 },
   };
 }
 
@@ -145,6 +148,11 @@ const METRIC_INFO = {
     low: 'Not much vertical lift. Build takeoff power with single-leg bounds, hops and plyometrics.',
     high: '',
   },
+  barMargin: {
+    label: 'Peak hip height vs bar', unit: 'cm', digits: 0,
+    low: 'Your hips peaked below the bar. You need more lift at takeoff, or a takeoff spot that puts your peak over the bar rather than before or after it.',
+    high: '',
+  },
   torsoAtPeak: {
     label: 'Back angle at peak (0° = flat)', unit: '°', digits: 0,
     low: '',
@@ -161,7 +169,7 @@ const PHASES = [
   { key: 'approach', label: 'Approach', weight: 15, metrics: ['approachSpeed'] },
   { key: 'curve', label: 'Curve lean', weight: 20, metrics: ['curveLean'] },
   { key: 'takeoff', label: 'Takeoff', weight: 30, metrics: ['plantKnee', 'plantHip', 'takeoffAngle'] },
-  { key: 'clearance', label: 'Bar clearance', weight: 25, metrics: ['rise', 'torsoAtPeak'] },
+  { key: 'clearance', label: 'Bar clearance', weight: 25, metrics: ['rise', 'barMargin', 'torsoAtPeak'] },
   { key: 'landing', label: 'Landing', weight: 10, metrics: ['landing'] },
 ];
 
@@ -183,7 +191,11 @@ function backBy(V, k, dt) {
  * frames: [{t: seconds, lms: [{x, y, visibility}] x33 normalized, or null}]
  * opts: {width, height, heightCm, gender: 'male'|'female'}
  */
-export function analyzeJump(frames, { width, height, heightCm, gender }) {
+export function analyzeJump(frames, { width, height, heightCm, gender, barCm = null }) {
+  if (barCm !== null && barCm !== undefined && !(barCm >= 50 && barCm <= 260)) {
+    throw new Error('Bar height must be between 50 and 260 cm.');
+  }
+  const hasBar = barCm !== null && barCm !== undefined;
   if (!(heightCm >= 100 && heightCm <= 230)) throw new Error('Height must be between 100 and 230 cm.');
   if (gender !== 'male' && gender !== 'female') throw new Error('Gender must be male or female.');
 
@@ -270,7 +282,9 @@ export function analyzeJump(frames, { width, height, heightCm, gender }) {
   const landsOnBack = sh[landing].y >= hip[landing].y - 0.05 * bodyPx;
 
   const targets = targetsFor(gender, heightCm);
+  const peakHipHeight = hipAtTakeoff + rise;
   const values = { approachSpeed, curveLean, plantKnee, plantHip, takeoffAngle, rise, torsoAtPeak };
+  if (hasBar) values.barMargin = peakHipHeight - barCm;
   const metrics = {};
   for (const [key, value] of Object.entries(values)) {
     const tgt = targets[key];
@@ -287,7 +301,7 @@ export function analyzeJump(frames, { width, height, heightCm, gender }) {
   };
 
   const phases = PHASES.map((p) => {
-    const scores = p.metrics.map((m) => metrics[m].score).filter((s) => s !== null);
+    const scores = p.metrics.filter((m) => metrics[m]).map((m) => metrics[m].score).filter((s) => s !== null);
     const score = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
     return { key: p.key, label: p.label, weight: p.weight, score };
   });
@@ -303,7 +317,10 @@ export function analyzeJump(frames, { width, height, heightCm, gender }) {
     info: {
       takeoffLeg: side,
       hipHeightAtTakeoff: hipAtTakeoff,
-      peakHipHeight: hipAtTakeoff + rise,
+      peakHipHeight,
+      barCm: hasBar ? barCm : null,
+      barPercentOfHeight: hasBar ? (100 * barCm) / heightCm : null,
+      liftNeededForBar: hasBar ? barCm - hipAtTakeoff : null,
       flightTime,
       riseFromFlightTime: (G_CM * flightTime * flightTime) / 8,
       rotation,

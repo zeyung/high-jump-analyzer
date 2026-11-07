@@ -10,7 +10,7 @@
 <body>
 <header class="top">
   <h1>High Jump Analyzer</h1>
-  <p class="sub">Upload a clip of one jump. The app marks your joints, measures your angles and rates the jump against targets for your height and gender.</p>
+  <p class="sub">Upload a clip of one jump. The app marks your joints, measures your angles and rates the jump against targets for your height and gender. Add the bar height to see if your hips cleared it.</p>
 </header>
 
 <main>
@@ -23,15 +23,23 @@
 
       <div class="row">
         <label class="field">
-          <span>Height</span>
+          <span>Athlete height</span>
           <div class="height">
             <input type="number" id="heightCm" min="100" max="230" step="1" placeholder="cm" inputmode="numeric">
             <input type="number" id="heightFt" min="3" max="7" step="1" placeholder="ft" inputmode="numeric" hidden>
             <input type="number" id="heightIn" min="0" max="11.9" step="0.5" placeholder="in" inputmode="decimal" hidden>
-            <select id="units" aria-label="Height units">
+            <select id="units" aria-label="Units for athlete and bar height">
               <option value="cm">cm</option>
               <option value="ftin">ft / in</option>
             </select>
+          </div>
+        </label>
+        <label class="field">
+          <span>Bar height <small class="opt">(optional)</small></span>
+          <div class="height">
+            <input type="number" id="barCm" min="50" max="260" step="1" placeholder="cm" inputmode="numeric">
+            <input type="number" id="barFt" min="1" max="8" step="1" placeholder="ft" inputmode="numeric" hidden>
+            <input type="number" id="barIn" min="0" max="11.9" step="0.5" placeholder="in" inputmode="decimal" hidden>
           </div>
         </label>
         <label class="field">

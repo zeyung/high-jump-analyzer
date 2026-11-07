@@ -46,6 +46,7 @@ h3 { font-size: 1rem; margin: 20px 0 8px; }
 }
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; flex: 1; min-width: 150px; }
 .field > span { font-weight: 600; font-size: 0.9rem; }
+.field .opt { font-weight: 400; color: var(--muted); }
 .row { display: flex; gap: 16px; flex-wrap: wrap; }
 .height { display: flex; gap: 6px; }
 .height input { flex: 1; min-width: 0; }

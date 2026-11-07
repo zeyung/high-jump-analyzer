@@ -5,6 +5,7 @@ Upload a video of one high jump and get:
 - **An annotated video**: a skeleton with anchor points at the shoulders, hips, knees and ankles, with live knee and hip angles and your lean into the curve.
 - **Key moments**: curve, plant, takeoff, peak and landing frames.
 - **Your numbers against your targets**: approach speed, curve lean, takeoff knee and hip angles, takeoff angle, hip rise and back angle at the peak. Targets adjust for your height and gender.
+- **Bar check** (optional): enter the bar height to compare your peak hip height with the bar, see the bar as a % of your height, and how much lift the bar needs from your takeoff.
 - **A 0-100 jump rating** with a score for each phase (approach, curve lean, takeoff, bar clearance, landing) and tips on what to work on.
 
 **Try it:** https://zeyung.github.io/high-jump-analyzer/
