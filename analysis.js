@@ -107,6 +107,8 @@ export function targetsFor(gender, heightCm) {
     // Peak hip height minus bar height. Hips at or above the bar is the aim;
     // in a good flop the hips pass close over the bar, so there is no upper limit.
     barMargin: { range: [0, Infinity], tol: 30 },
+    // Lowest body part's height over the bar at its highest point.
+    clearance: { range: [0, Infinity], tol: 20 },
   };
 }
 
@@ -144,13 +146,18 @@ const METRIC_INFO = {
     high: 'Your takeoff is very steep. You may be jumping straight up instead of travelling over the bar.',
   },
   rise: {
-    label: 'Hip rise after takeoff', unit: 'cm', digits: 0,
+    label: 'Vertical jump (hip rise after takeoff)', unit: 'cm', digits: 0,
     low: 'Not much vertical lift. Build takeoff power with single-leg bounds, hops and plyometrics.',
     high: '',
   },
   barMargin: {
     label: 'Peak hip height vs bar', unit: 'cm', digits: 0,
     low: 'Your hips peaked below the bar. You need more lift at takeoff, or a takeoff spot that puts your peak over the bar rather than before or after it.',
+    high: '',
+  },
+  clearance: {
+    label: 'Bar clearance (lowest body part)', unit: 'cm', digits: 0,
+    low: '', // filled in with the body part that was lowest
     high: '',
   },
   torsoAtPeak: {
@@ -169,7 +176,7 @@ const PHASES = [
   { key: 'approach', label: 'Approach', weight: 15, metrics: ['approachSpeed'] },
   { key: 'curve', label: 'Curve lean', weight: 20, metrics: ['curveLean'] },
   { key: 'takeoff', label: 'Takeoff', weight: 30, metrics: ['plantKnee', 'plantHip', 'takeoffAngle'] },
-  { key: 'clearance', label: 'Bar clearance', weight: 25, metrics: ['rise', 'barMargin', 'torsoAtPeak'] },
+  { key: 'clearance', label: 'Bar clearance', weight: 25, metrics: ['rise', 'barMargin', 'clearance', 'torsoAtPeak'] },
   { key: 'landing', label: 'Landing', weight: 10, metrics: ['landing'] },
 ];
 
@@ -180,6 +187,26 @@ export function ratingLabel(score) {
   return 'Needs work';
 }
 
+// Body parts checked against the bar. Pose points are joint centres, but the
+// bar touches the skin on the back side of the body (a flop goes over face
+// up), so each part has an allowance from joint centre to the back surface,
+// for a 175 cm athlete; it scales with height.
+export const CLEARANCE_PARTS = [
+  { key: 'head', label: 'Head', points: [[0]], allowance: 18 },
+  { key: 'shoulders', label: 'Shoulders', points: [[11, 12]], allowance: 8 },
+  { key: 'hips', label: 'Hips', points: [[23, 24]], allowance: 10 },
+  { key: 'knees', label: 'Knees', points: [[25], [26]], allowance: 5 },
+  { key: 'feet', label: 'Feet', points: [[27], [28]], allowance: 5 },
+];
+
+const CLEARANCE_TIPS = {
+  head: 'Your head was lowest over the bar. Tuck your chin and look along the bar so your head drops behind it as your hips rise.',
+  shoulders: 'Your shoulders were lowest over the bar. Lay back sooner after takeoff so your shoulders drop and your hips rise.',
+  hips: 'Your hips were lowest over the bar. Push your hips up into an arch at the top (think "belly button to the sky").',
+  knees: 'Your knees were lowest over the bar. Lift your knees by tucking your chin to your chest once your hips pass the bar.',
+  feet: 'Your feet were lowest over the bar. Kick your heels up and tuck your chin as your hips pass the bar.',
+};
+
 // Index of the earliest frame no more than dt seconds before frame k.
 function backBy(V, k, dt) {
   let j = k;
@@ -189,9 +216,13 @@ function backBy(V, k, dt) {
 
 /**
  * frames: [{t: seconds, lms: [{x, y, visibility}] x33 normalized, or null}]
- * opts: {width, height, heightCm, gender: 'male'|'female'}
+ * opts: {width, height, heightCm, gender: 'male'|'female', barCm?, bar?}
+ * bar (optional, needs barCm): the bar marked on the video, normalized
+ *   {a: {x, y}, b: {x, y}} = the two ends of the bar, and
+ *   ground: {x, y} = the floor under one standard. It gives the exact bar
+ *   line and a better scale than the athlete's height.
  */
-export function analyzeJump(frames, { width, height, heightCm, gender, barCm = null }) {
+export function analyzeJump(frames, { width, height, heightCm, gender, barCm = null, bar = null }) {
   if (barCm !== null && barCm !== undefined && !(barCm >= 50 && barCm <= 260)) {
     throw new Error('Bar height must be between 50 and 260 cm.');
   }
@@ -220,8 +251,27 @@ export function analyzeJump(frames, { width, height, heightCm, gender, barCm = n
 
   const pre = [...Array(peak).keys()];
   const bodyPx = percentile(pre.map((k) => dist(V[k].P[LM.nose], ank[k])), 0.9) / NOSE_TO_ANKLE_RATIO;
-  const cmPerPx = heightCm / bodyPx;
+  const cmPerPxFromHeight = heightCm / bodyPx;
   const groundY = percentile(pre.map((k) => lowAnkY[k]), 0.95);
+
+  // Bar line in pixels, and the scale it gives when marked.
+  let barLine = null, cmPerPx = cmPerPxFromHeight, scaleSource = 'athlete height';
+  if (hasBar && bar && bar.a && bar.b && bar.ground) {
+    const A = { x: bar.a.x * width, y: bar.a.y * height };
+    const B = { x: bar.b.x * width, y: bar.b.y * height };
+    const Gp = { x: bar.ground.x * width, y: bar.ground.y * height };
+    const yAt = (x) => (B.x === A.x ? (A.y + B.y) / 2 : A.y + ((B.y - A.y) * (x - A.x)) / (B.x - A.x));
+    const barPx = Gp.y - yAt(Gp.x);
+    if (barPx > 10) {
+      cmPerPx = barCm / barPx;
+      scaleSource = 'marked bar';
+      barLine = { x1: A.x, y1: A.y, x2: B.x, y2: B.y, yAt, marked: true };
+    }
+  }
+  if (hasBar && !barLine) {
+    const y = groundY - barCm / cmPerPx;
+    barLine = { x1: 0, y1: y, x2: width, y2: y, yAt: () => y, marked: false };
+  }
   const tol = 0.03 * bodyPx;
 
   // Takeoff (toe-off): last frame before the peak with a foot on the ground.
@@ -283,8 +333,38 @@ export function analyzeJump(frames, { width, height, heightCm, gender, barCm = n
 
   const targets = targetsFor(gender, heightCm);
   const peakHipHeight = hipAtTakeoff + rise;
+
+  // Clearance: every body part has to be above the bar at some moment in the
+  // air, so compare each part's best height over the bar line during flight.
+  // This does not need to know when each part crossed the bar plane.
+  let clearance = null;
+  if (barLine) {
+    const scaleAllow = heightCm / 175;
+    const flightEnd = Math.max(landing, Math.min(V.length - 1, takeoff + 3));
+    const parts = CLEARANCE_PARTS.map((part) => {
+      let worst = null; // worst side for left/right parts
+      for (const pts of part.points) {
+        let best = -Infinity, bestK = takeoff;
+        for (let k = takeoff; k <= flightEnd; k++) {
+          const P = V[k].P;
+          const x = pts.reduce((s, j) => s + P[j].x, 0) / pts.length;
+          const y = pts.reduce((s, j) => s + P[j].y, 0) / pts.length;
+          const above = barLine.yAt(x) - y;
+          if (above > best) { best = above; bestK = k; }
+        }
+        const cm = best * cmPerPx - part.allowance * scaleAllow;
+        if (!worst || cm < worst.cm) worst = { cm, frame: V[bestK].i };
+      }
+      return { key: part.key, label: part.label, cm: worst.cm, frame: worst.frame };
+    });
+    const lowest = parts.reduce((a, b) => (b.cm < a.cm ? b : a));
+    const verdict = lowest.cm >= 2 ? 'cleared' : lowest.cm >= -3 ? 'close' : 'knocked';
+    clearance = { parts, lowest: lowest.key, lowestLabel: lowest.label, lowestCm: lowest.cm, verdict, method: barLine.marked ? 'marked bar' : 'bar height' };
+  }
+
   const values = { approachSpeed, curveLean, plantKnee, plantHip, takeoffAngle, rise, torsoAtPeak };
   if (hasBar) values.barMargin = peakHipHeight - barCm;
+  if (clearance) values.clearance = clearance.lowestCm;
   const metrics = {};
   for (const [key, value] of Object.entries(values)) {
     const tgt = targets[key];
@@ -292,6 +372,7 @@ export function analyzeJump(frames, { width, height, heightCm, gender, barCm = n
     const info = METRIC_INFO[key];
     let tip = '';
     if (score !== null && score < 100) tip = value < tgt.range[0] ? info.low : info.high;
+    if (key === 'clearance' && score < 100) tip = CLEARANCE_TIPS[clearance.lowest];
     metrics[key] = { key, label: info.label, unit: info.unit, digits: info.digits, value, target: tgt.range, score, tip };
   }
   metrics.landing = {
@@ -325,6 +406,12 @@ export function analyzeJump(frames, { width, height, heightCm, gender, barCm = n
       riseFromFlightTime: (G_CM * flightTime * flightTime) / 8,
       rotation,
       cmPerPx,
+      cmPerPxFromHeight,
+      scaleSource,
+      verticalJump: rise,
+      clearance,
+      barLine: barLine ? { x1: barLine.x1, y1: barLine.y1, x2: barLine.x2, y2: barLine.y2, marked: barLine.marked } : null,
+      groundY,
     },
     keyFrames: {
       curve: V[curve].i, plant: V[plant].i, takeoff: V[takeoff].i, peak: V[peak].i, landing: V[landing].i,

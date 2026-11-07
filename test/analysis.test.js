@@ -92,3 +92,37 @@ test('bar height compares peak hip height with the bar', () => {
 
   assert.throws(() => analyzeJump(frames, { ...opts, barCm: 400 }), /Bar height/);
 });
+
+test('clearance checks each body part against the bar', () => {
+  const frames = syntheticJump({ lean: 15, launch: 48, risePx: 100 });
+  const none = analyzeJump(frames, opts);
+  assert.equal(none.info.clearance, null);
+  assert.ok(Math.abs(none.info.verticalJump - 60) < 3);
+
+  const low = analyzeJump(frames, { ...opts, barCm: 100 });
+  const cl = low.info.clearance;
+  assert.deepEqual(cl.parts.map((p) => p.key), ['head', 'shoulders', 'hips', 'knees', 'feet']);
+  assert.equal(cl.verdict, 'cleared');
+  assert.equal(cl.method, 'bar height');
+  assert.equal(low.metrics.clearance.score, 100);
+
+  const high = analyzeJump(frames, { ...opts, barCm: 160 });
+  assert.equal(high.info.clearance.verdict, 'knocked');
+  assert.ok(high.metrics.clearance.score < 50);
+  assert.ok(high.metrics.clearance.tip.includes(high.info.clearance.lowestLabel.toLowerCase().replace(/s$/, '')));
+});
+
+test('a marked bar sets the bar line and the scale', () => {
+  const frames = syntheticJump({ lean: 15, launch: 48, risePx: 100 });
+  // Bar at 120 cm = 200 px above the ground line at y=560 (0.6 cm/px), drawn level.
+  const y = (560 - 200) / 600;
+  const bar = { a: { x: 0.2, y }, b: { x: 0.9, y }, ground: { x: 0.9, y: 560 / 600 } };
+  const a = analyzeJump(frames, { ...opts, barCm: 120, bar });
+  assert.equal(a.info.scaleSource, 'marked bar');
+  assert.equal(a.info.clearance.method, 'marked bar');
+  assert.ok(Math.abs(a.info.cmPerPx - 0.6) < 1e-9);
+  // Same bar via bar height alone should give nearly the same hip clearance.
+  const b = analyzeJump(frames, { ...opts, barCm: 120 });
+  const hip = (r) => r.info.clearance.parts.find((p) => p.key === 'hips').cm;
+  assert.ok(Math.abs(hip(a) - hip(b)) < 4, `${hip(a)} vs ${hip(b)}`);
+});

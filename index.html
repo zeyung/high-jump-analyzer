@@ -10,7 +10,7 @@
 <body>
 <header class="top">
   <h1>High Jump Analyzer</h1>
-  <p class="sub">Upload a clip of one jump. The app marks your joints, measures your angles and rates the jump against targets for your height and gender. Add the bar height to see if your hips cleared it.</p>
+  <p class="sub">Upload a clip of one jump. The app marks your joints, measures your angles and rates the jump against targets for your height and gender. Add the bar height to check your vertical jump against the bar and whether every body part cleared it.</p>
 </header>
 
 <main>
@@ -56,10 +56,39 @@
         </label>
       </div>
 
+      <div class="row">
+        <label class="field">
+          <span>Tracking</span>
+          <select id="quality">
+            <option value="standard">Standard (faster)</option>
+            <option value="high">High accuracy (slower)</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Clip speed</span>
+          <select id="slowmo">
+            <option value="1">Real time</option>
+            <option value="2">Slow motion, 2× slower</option>
+            <option value="4">Slow motion, 4× slower</option>
+            <option value="8">Slow motion, 8× slower</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Result <small class="opt">(optional)</small></span>
+          <select id="result">
+            <option value="">Not sure</option>
+            <option value="cleared">Cleared the bar</option>
+            <option value="knocked">Knocked the bar</option>
+          </select>
+        </label>
+      </div>
+
       <details class="tips">
         <summary>How to film for the best result</summary>
         <ul>
-          <li>Film from the side, roughly in line with the bar, so the camera sees the curve and the takeoff side-on.</li>
+          <li>Film from the takeoff side with the bar running across the picture, so the camera sees the last steps, the takeoff and the bar.</li>
+          <li>Get both standards and the floor under them in frame so you can mark the bar.</li>
+          <li>Slow-motion clips work: set Clip speed to match (most phones film slow-mo at 4× or 8×).</li>
           <li>Keep the whole body in frame from the last 4-5 steps through the landing.</li>
           <li>Hold the phone still (a tripod helps) and do not zoom during the jump.</li>
           <li>One jump per clip. Up to 15 seconds is analyzed from the start time.</li>
@@ -80,10 +109,18 @@
       <input type="range" id="scrub" min="0" max="0" value="0" aria-label="Frame">
     </div>
     <div class="keys" id="keys"></div>
+    <div class="tools">
+      <button type="button" id="markBar" class="secondary">Mark the bar</button>
+      <button type="button" id="clearBar" class="secondary" hidden>Remove bar marks</button>
+      <button type="button" id="fixPoints" class="secondary">Fix points</button>
+      <button type="button" id="applyFixes" hidden>Re-analyze with fixes</button>
+    </div>
+    <p class="hint" id="hint" role="status"></p>
     <div class="downloads">
       <button type="button" id="dlVideo" class="secondary">Download annotated video</button>
       <button type="button" id="dlReport" class="secondary">Download report</button>
       <button type="button" id="dlJson" class="secondary">Download metrics.json</button>
+      <button type="button" id="exportData" class="secondary">Export labeled frames</button>
     </div>
   </section>
 
